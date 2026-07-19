@@ -17,6 +17,17 @@ from data_sources import (
 )
 from scoring import analyze_slate, market_classification, slate_frame
 from strategy_packet import MarketPrice, build_strategy_packet
+from storage import (
+    database_status,
+    load_bets,
+    load_reviews,
+    load_snapshots,
+    register_model_version,
+    save_bet,
+    save_bet_review,
+    save_market_snapshot,
+    update_bet_result,
+)
 
 CURRENT_SEASON = date.today().year
 st.set_page_config(page_title="MLB Trading Desk", page_icon="⚾", layout="wide")
@@ -285,6 +296,39 @@ def render_game_card(analyses: list[dict]) -> None:
         notes,
         final_market_status,
     )
+
+    if odds_submitted:
+        selection = st.selectbox(
+            "Snapshot selection",
+            [item["away"], item["home"]],
+            key=f"snapshot-selection-{item['game_pk']}",
+        )
+        if selection == item["away"]:
+            selected_odds = int(away_odds)
+            opposing = int(home_odds)
+            selected_no_vig = away_raw / total
+        else:
+            selected_odds = int(home_odds)
+            opposing = int(away_odds)
+            selected_no_vig = home_raw / total
+
+        if st.button("Save market snapshot", key=f"save-snapshot-{item['game_pk']}"):
+            try:
+                snapshot_id = save_market_snapshot(
+                    item=item,
+                    game_date=selected_date,
+                    market_type=market,
+                    selection=selection,
+                    selection_odds=selected_odds,
+                    opposing_odds=opposing,
+                    no_vig_probability=selected_no_vig,
+                    market_status=final_market_status,
+                    notes=notes,
+                )
+                st.session_state["latest_snapshot_id"] = snapshot_id
+                st.success("Market snapshot saved to Supabase.")
+            except Exception as exc:
+                st.error(f"Could not save snapshot: {exc}")
     st.text_area("Copy into the Betting Strategy thread", value=packet, height=500)
     st.download_button(
         "Download strategy packet",
@@ -347,62 +391,143 @@ def render_live(games: list[dict]) -> None:
 
 
 def render_journal() -> None:
-    st.header("Journal")
-    st.caption("Session-based for now. Persistent storage and automatic Game Card prefilling are later phases.")
-    st.session_state.setdefault("journal_entries", [])
+    st.header("Persistent Journal")
+    status, message = database_status()
+    if status != "CONNECTED":
+        st.error("Supabase is not connected. Complete the setup instructions before saving journal data.")
+        st.caption(message)
+        return
 
-    c1, c2, c3 = st.columns(3)
-    with c1:
-        entry_date = st.date_input("Date", value=date.today(), key="journal_date")
-        game = st.text_input("Game", placeholder="Mets at Phillies")
-        market = st.selectbox(
-            "Market",
-            ["Full-game ML", "F5 ML", "F5 -0.5", "Run line", "Total", "No bet / tracked pass"],
-        )
-    with c2:
-        selection = st.text_input("Selection", placeholder="Phillies F5 -0.5")
-        odds = st.number_input("Entry odds", value=-110, step=1)
-        stake = st.number_input("Stake", min_value=0.0, value=5.0, step=1.0)
-    with c3:
-        classification = st.selectbox(
-            "Decision status",
-            ["VALUE CANDIDATE", "PRICE SENSITIVE", "LIVE WATCH", "PASS", "DATA CHECK", "NO BET"],
-        )
-        result = st.selectbox("Result", ["Open", "Win", "Loss", "Push", "No bet"])
-        closing = st.number_input("Closing odds", value=-110, step=1)
+    tabs = st.tabs(["New bet", "Settle bet", "Review bet", "Stored bets", "Market snapshots"])
 
-    notes = st.text_area("Thesis, execution, and postgame lesson")
-    if st.button("Add journal entry", type="primary"):
-        st.session_state.journal_entries.append(
-            {
-                "Date": entry_date.isoformat(),
-                "Game": game,
-                "Market": market,
-                "Selection": selection,
-                "Entry Odds": int(odds),
-                "Stake": float(stake),
-                "Decision Status": classification,
-                "Result": result,
-                "Closing Odds": int(closing),
-                "Notes": notes,
+    with tabs[0]:
+        c1, c2, c3 = st.columns(3)
+        with c1:
+            entry_date = st.date_input("Date", value=date.today(), key="db_journal_date")
+            game_pk = st.number_input("MLB game ID (optional)", min_value=0, value=0, step=1)
+            market = st.selectbox(
+                "Market",
+                ["Full-game ML", "F5 ML", "F5 -0.5", "Run line", "Total", "Player prop"],
+                key="db_market",
+            )
+        with c2:
+            selection = st.text_input("Selection", placeholder="Phillies F5 -0.5", key="db_selection")
+            odds = st.number_input("Entry odds", value=-110, step=1, key="db_odds")
+            stake = st.number_input("Stake", min_value=0.0, value=5.0, step=1.0, key="db_stake")
+        with c3:
+            decision_status = st.selectbox(
+                "Decision status",
+                ["VALUE CANDIDATE", "PRICE SENSITIVE", "LIVE WATCH", "MANUAL BET"],
+                key="db_status",
+            )
+            snapshot_id = st.text_input(
+                "Snapshot ID (optional)",
+                value=st.session_state.get("latest_snapshot_id", ""),
+                key="db_snapshot",
+            )
+        notes = st.text_area("Thesis and entry context", key="db_notes")
+
+        if st.button("Save bet to Supabase", type="primary"):
+            if not selection.strip():
+                st.error("Selection is required.")
+            else:
+                try:
+                    bet_id = save_bet(
+                        snapshot_id=snapshot_id.strip() or None,
+                        game_pk=int(game_pk) if game_pk else None,
+                        game_date=entry_date.isoformat(),
+                        market_type=market,
+                        selection=selection.strip(),
+                        entry_odds=int(odds),
+                        stake=float(stake),
+                        decision_status=decision_status,
+                        notes=notes,
+                    )
+                    st.success(f"Bet saved. ID: {bet_id}")
+                except Exception as exc:
+                    st.error(f"Could not save bet: {exc}")
+
+    bets = load_bets()
+
+    with tabs[1]:
+        if bets.empty:
+            st.info("No stored bets.")
+        else:
+            labels = {
+                f"{row.get('placed_at', '')} | {row.get('selection', '')} | {row.get('entry_odds', '')} | {row.get('result', '')}": row["bet_id"]
+                for _, row in bets.iterrows()
             }
-        )
-        st.success("Journal entry added.")
+            label = st.selectbox("Choose bet", list(labels), key="settle_bet")
+            result = st.selectbox("Result", ["Open", "Win", "Loss", "Push", "Void"], key="settle_result")
+            profit_loss = st.number_input("Profit / loss", value=0.0, step=1.0, key="settle_pl")
+            closing_odds = st.number_input("Closing odds", value=-110, step=1, key="settle_close")
+            if st.button("Update bet result"):
+                try:
+                    update_bet_result(labels[label], result, float(profit_loss), int(closing_odds))
+                    st.success("Bet updated.")
+                except Exception as exc:
+                    st.error(f"Could not update bet: {exc}")
 
-    frame = pd.DataFrame(st.session_state.journal_entries)
-    if frame.empty:
-        st.info("No journal entries yet.")
-    else:
-        st.dataframe(frame, use_container_width=True, hide_index=True)
-        st.download_button(
-            "Download journal CSV",
-            frame.to_csv(index=False).encode("utf-8"),
-            "mlb_bet_journal.csv",
-            "text/csv",
-        )
+    with tabs[2]:
+        if bets.empty:
+            st.info("No stored bets.")
+        else:
+            labels = {
+                f"{row.get('game_date', '')} | {row.get('selection', '')} | {row.get('result', '')}": row["bet_id"]
+                for _, row in bets.iterrows()
+            }
+            label = st.selectbox("Choose bet to review", list(labels), key="review_bet")
+            thesis = st.text_area("Original thesis", key="review_thesis")
+            thesis_killers = st.text_area("Thesis killers / cancellation conditions", key="review_killers")
+            thesis_broken = st.checkbox("Thesis broke during the game", key="review_broken")
+            c1, c2 = st.columns(2)
+            with c1:
+                execution_grade = st.selectbox("Execution grade", ["A", "B", "C", "D", "F"], key="exec_grade")
+            with c2:
+                thesis_grade = st.selectbox("Thesis grade", ["A", "B", "C", "D", "F"], key="thesis_grade")
+            lesson = st.text_area("Postgame lesson", key="review_lesson")
+            if st.button("Save review"):
+                try:
+                    save_bet_review(
+                        labels[label], thesis, thesis_killers, thesis_broken,
+                        execution_grade, thesis_grade, lesson,
+                    )
+                    st.success("Review saved.")
+                except Exception as exc:
+                    st.error(f"Could not save review: {exc}")
+
+    with tabs[3]:
+        bets = load_bets()
+        if bets.empty:
+            st.info("No stored bets.")
+        else:
+            st.dataframe(bets, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download bets CSV",
+                bets.to_csv(index=False).encode("utf-8"),
+                "mlb_bets_backup.csv",
+                "text/csv",
+            )
+        reviews = load_reviews()
+        if not reviews.empty:
+            st.subheader("Stored reviews")
+            st.dataframe(reviews, use_container_width=True, hide_index=True)
+
+    with tabs[4]:
+        snapshots = load_snapshots()
+        if snapshots.empty:
+            st.info("No market snapshots saved yet.")
+        else:
+            st.dataframe(snapshots, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download snapshots CSV",
+                snapshots.to_csv(index=False).encode("utf-8"),
+                "mlb_market_snapshots_backup.csv",
+                "text/csv",
+            )
 
 
-st.title("⚾ MLB Trading Desk v0.5")
+st.title("⚾ MLB Trading Desk v0.5.1")
 with st.sidebar:
     selected_date = st.date_input("Game date", value=date.today()).isoformat()
     page = st.radio("Workspace", ["Dashboard", "Slate", "Game Card", "Live Desk", "Journal"])
@@ -411,6 +536,20 @@ with st.sidebar:
     if st.button("Refresh MLB data"):
         st.cache_data.clear()
         st.session_state.last_refresh = datetime.now().strftime("%-I:%M %p")
+
+    db_state, db_message = database_status()
+    if db_state == "CONNECTED":
+        st.success("Database: Connected")
+        try:
+            register_model_version()
+        except Exception:
+            pass
+    elif db_state == "NOT CONFIGURED":
+        st.warning("Database: Not configured")
+    else:
+        st.error(f"Database: {db_state}")
+    with st.expander("Database details"):
+        st.write(db_message)
 
 try:
     games = get_schedule(selected_date)
