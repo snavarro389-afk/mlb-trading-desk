@@ -1,114 +1,80 @@
 # MLB Trading Desk
 
-## Version: v0.3 — Automated Slate Engine, Phase 1
+## Version: v0.3.1 — Scoring Integrity Pass
 
-MLB Trading Desk is a Streamlit decision-support app that reduces the daily MLB slate into a smaller set of research candidates, price checks, live watches, data checks, and passes.
+This release corrects the interpretation and missing-data problems identified in the v0.3 review.
 
-The app performs repetitive data gathering and transparent comparisons. It does not place wagers and its Research Priority Score is not a projected win probability.
+## What changed
 
-## Workspaces
-
-- **Dashboard:** High-level view of the strongest attention candidates.
-- **Slate:** Ranked table for every game on the selected date.
-- **Game Card:** Starter and offense comparisons, data completeness, manual odds, no-vig math, and a Strategy Packet.
-- **Live Desk:** Live score, inning, pitching line, command, velocity, and contact quality.
-- **Journal:** Session-based decision and wager log with CSV export.
-
-## Phase 1 automation
-
-The app now retrieves and processes:
-
-- Full MLB schedule for the selected date
-- Probable starting pitchers
-- Starting-pitcher season statistics
-- Team season hitting statistics
-- Transparent starter and offense component scores
-- Research Priority Score
-- Data-confidence classification
-- Slate ranking
-- Manual two-sided sportsbook odds
-- No-vig probabilities and market hold
-- Downloadable Strategy Packet for the Betting Strategy thread
-- Existing MLB live-feed data
-
-## Classification labels
-
-- **DEEP DIVE:** Large measurable separation with adequate data
-- **PRICE CHECK:** Worth evaluating against sportsbook pricing
-- **LIVE WATCH:** Potentially useful, but better suited for live confirmation
-- **DATA CHECK:** Missing or incomplete inputs prevent a confident ranking
-- **PASS:** Limited measurable separation at the current stage
+- Missing stats remain `N/A`; no fallback ERA, WHIP, AVG, OBP, SLG, or OPS values are displayed as retrieved data.
+- **Research Priority Score** is renamed **Matchup Separation Score**.
+- **Preliminary lean** is renamed **Baseball-side advantage**.
+- Pregame classifications are now strictly premarket:
+  - `TOP MATCHUP`
+  - `REVIEW`
+  - `LOW SEPARATION`
+  - `DATA CHECK`
+- Market status remains `MARKET PENDING` until the user explicitly submits two-sided odds.
+- Default `-110/-110` inputs no longer count as real market data until submitted.
+- The Game Card labels offense as **Season offense baseline**.
+- Strategy Packets distinguish:
+  - retrieved data
+  - inferred app output
+  - missing/not-yet-automated data
+  - manually entered market data
+  - user-entered context
+- Dashboard shows the last refresh time.
+- Low-confidence games cannot create artificial edges from missing values.
 
 ## Important interpretation
 
-The Research Priority Score answers:
+The Matchup Separation Score answers:
 
-> Which games deserve attention?
+> How large is the measurable difference between the teams in the current Phase 1 data?
 
 It does not answer:
 
-> What is the exact probability that a team wins?
+> What is the exact probability that either team wins?
 
-Starting pitching currently receives 65% of the matchup comparison and team offense receives 35%. These are initial transparent research weights, not a validated predictive model.
+It also does not establish betting value. Betting value remains unknown until current two-sided sportsbook odds are submitted and reviewed.
 
-## Installation
+## Current automated data
 
-1. Install Python 3.11 or newer.
-2. Install dependencies:
-
-```bash
-pip install streamlit pandas requests
-```
-
-3. Run:
-
-```bash
-streamlit run app.py
-```
+- MLB schedule
+- probable starters
+- starter season stats
+- season offense baselines
+- starter and offense component comparisons
+- Matchup Separation Score
+- data confidence
+- market hold and no-vig calculation after explicit odds submission
+- structured Strategy Packet
+- live MLB game feed
 
 ## Current limitations
 
-- DraftKings and other sportsbook odds remain manual.
-- Confirmed lineups are not integrated yet.
-- Bullpen workload is not integrated yet.
-- Injury and late-scratch context is not integrated yet.
-- Team offense is season-level in Phase 1; handedness and recent-form splits come later.
-- MLB Stats API fields can change.
+- Bullpen workload is not integrated.
+- Confirmed lineups are not integrated.
+- Injuries and late scratches are not integrated.
+- Handedness and recent-form splits are not integrated.
+- Sportsbook odds remain manual.
 - Journal entries remain session-based.
-- The barrel indicator in the Live Desk is a proxy, not MLB's official barrel classification.
-- The system does not guarantee profitable betting outcomes.
+- Live trigger logic is not yet connected to the Game Card.
+- The system does not place wagers or guarantee profitable outcomes.
 
-## Next build phases
+## Installation
 
-### Phase 2 — Bullpen and lineup intelligence
+```bash
+pip install streamlit pandas requests
+streamlit run app.py
+```
 
-- Prior three days of reliever usage
-- High-leverage reliever availability
-- Confirmed lineup status
-- Starter handedness matchup
-- Lineup-change detection
-- Improved data-confidence calculation
+## Next planned phase
 
-### Phase 3 — Market layer
+After this integrity release is validated in Streamlit, the next build should add:
 
-- Saved odds by game
-- Fair-price comparison
-- Target-price logic
-- F5 versus full-game market comparison
-- Reclassification after market entry
-
-### Phase 4 — Live thesis engine
-
-- Save the pregame thesis
-- Trigger-by-trigger live monitoring
-- Velocity baseline comparison
-- Strike-rate, walk, pitch-count, and hard-contact thresholds
-- Thesis status: Confirmed, Continue Watching, or Cancel
-
-### Phase 5 — Persistence and validation
-
-- SQLite or cloud storage
-- Closing-line-value tracking
-- Component-level performance analysis
-- Historical calibration
-- Weight adjustment based on evidence
+1. starter handedness and team offense splits
+2. confirmed lineup status
+3. bullpen usage over the prior three days
+4. saved market inputs
+5. live thesis triggers
