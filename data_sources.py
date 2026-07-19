@@ -277,3 +277,145 @@ def contact_summary(bbe: pd.DataFrame) -> pd.DataFrame:
     )
     frame["Hard-Hit %"] = frame["Hard_Hits"] / frame["BBE"] * 100
     return frame.round({"Avg_EV": 1, "Max_EV": 1, "Hard-Hit %": 1})
+
+
+@st.cache_data(ttl=900)
+def get_team_recent_games(team_id: int, end_date: str, days: int = 3) -> list[dict[str, Any]]:
+    end = date.fromisoformat(end_date) - timedelta(days=1)
+    start = end - timedelta(days=max(days - 1, 0))
+    payload = get_json(
+        "/v1/schedule",
+        {
+            "sportId": 1,
+            "teamId": team_id,
+            "startDate": start.isoformat(),
+            "endDate": end.isoformat(),
+            "gameType": "R",
+            "hydrate": "team,linescore,probablePitcher",
+        },
+    )
+    games = [game for day in payload.get("dates", []) for game in day.get("games", [])]
+    return [
+        game
+        for game in games
+        if game.get("status", {}).get("abstractGameState") == "Final"
+    ]
+
+
+@st.cache_data(ttl=900)
+def get_team_bullpen_workload(
+    team_id: int,
+    end_date: str,
+    days: int = 3,
+) -> dict[str, Any]:
+    games = get_team_recent_games(team_id, end_date, days)
+    relievers: dict[int, dict[str, Any]] = {}
+    team_pitches = 0
+    team_appearances = 0
+    games_found = 0
+
+    for game in games:
+        game_pk = game.get("gamePk")
+        if not game_pk:
+            continue
+        try:
+            feed = get_live_feed(int(game_pk))
+        except Exception:
+            continue
+
+        box = feed.get("liveData", {}).get("boxscore", {})
+        side = None
+        for candidate in ("away", "home"):
+            candidate_id = (
+                box.get("teams", {})
+                .get(candidate, {})
+                .get("team", {})
+                .get("id")
+            )
+            if candidate_id == team_id:
+                side = candidate
+                break
+        if side is None:
+            continue
+
+        games_found += 1
+        team_box = box.get("teams", {}).get(side, {})
+        probable_id = (
+            game.get("teams", {})
+            .get(side, {})
+            .get("probablePitcher", {})
+            .get("id")
+        )
+
+        for player in team_box.get("players", {}).values():
+            pitching = player.get("stats", {}).get("pitching")
+            if not pitching:
+                continue
+
+            player_id = player.get("person", {}).get("id")
+            if not player_id:
+                continue
+
+            games_started = int(safe_number(pitching.get("gamesStarted"), 0))
+            is_starter = games_started > 0 or player_id == probable_id
+            if is_starter:
+                continue
+
+            pitches = int(safe_number(pitching.get("numberOfPitches"), 0))
+            if pitches <= 0:
+                continue
+
+            record = relievers.setdefault(
+                int(player_id),
+                {
+                    "Pitcher": player.get("person", {}).get("fullName", "Unknown"),
+                    "Appearances": 0,
+                    "Pitches": 0,
+                    "Back-to-back": False,
+                    "Dates": [],
+                },
+            )
+            record["Appearances"] += 1
+            record["Pitches"] += pitches
+            record["Dates"].append(game.get("gameDate", "")[:10])
+            team_pitches += pitches
+            team_appearances += 1
+
+    for record in relievers.values():
+        unique_dates = sorted(set(record["Dates"]))
+        record["Dates"] = ", ".join(unique_dates)
+        record["Back-to-back"] = len(unique_dates) >= 2
+
+    reliever_rows = sorted(
+        relievers.values(),
+        key=lambda row: (row["Appearances"], row["Pitches"]),
+        reverse=True,
+    )
+
+    max_appearances = max((row["Appearances"] for row in reliever_rows), default=0)
+    max_pitches = max((row["Pitches"] for row in reliever_rows), default=0)
+    multi_day_arms = sum(1 for row in reliever_rows if row["Appearances"] >= 2)
+
+    if max_appearances >= 3 or max_pitches >= 45 or team_pitches >= 120:
+        status = "CONCERNING"
+        availability_score = 35
+    elif max_appearances >= 2 or max_pitches >= 30 or team_pitches >= 80:
+        status = "LIMITED"
+        availability_score = 60
+    elif games_found == 0:
+        status = "NO RECENT GAME DATA"
+        availability_score = None
+    else:
+        status = "RESTED"
+        availability_score = 85
+
+    return {
+        "status": status,
+        "availability_score": availability_score,
+        "games_found": games_found,
+        "team_pitches": team_pitches,
+        "team_appearances": team_appearances,
+        "multi_day_arms": multi_day_arms,
+        "max_reliever_pitches": max_pitches,
+        "relievers": reliever_rows,
+    }
