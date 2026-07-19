@@ -30,7 +30,7 @@ def show_value(value, digits: int = 2):
 
 def render_dashboard(analyses: list[dict], selected_date: str, refreshed_at: str) -> None:
     st.header("Decision Dashboard")
-    st.caption("Matchup intelligence using starter handedness, offense splits, recent context, and lineup readiness. Scores are not win probabilities.")
+    st.caption("Matchup intelligence plus prior-three-day bullpen availability. Scores remain decision aids, not win probabilities.")
     counts = pd.Series([row["premarket_status"] for row in analyses]).value_counts()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Games", len(analyses))
@@ -49,7 +49,7 @@ def render_dashboard(analyses: list[dict], selected_date: str, refreshed_at: str
     if incomplete:
         st.warning(f"{incomplete} game(s) have incomplete Phase 1 data. Missing values are shown as N/A and do not create artificial edges.")
 
-    st.info("v0.4 adds starter handedness, offense versus that handedness, 14/30-day context, pitcher recent-30 context, and lineup readiness. Bullpen workload, injury context, and automated odds remain future layers.")
+    st.info("v0.5 adds prior-three-day bullpen workload and availability. It flags rested, limited, or concerning usage without treating workload as bullpen talent. Injury context and automated odds remain future layers.")
 
 
 def render_slate(analyses: list[dict]) -> None:
@@ -162,6 +162,42 @@ def render_game_card(analyses: list[dict]) -> None:
         hide_index=True,
     )
 
+    st.subheader("Bullpen availability — prior three days")
+    away_bp = item["away_bullpen"]
+    home_bp = item["home_bullpen"]
+    st.dataframe(
+        pd.DataFrame(
+            [
+                {
+                    "Team": item["away"],
+                    "Status": away_bp["status"],
+                    "Games found": away_bp["games_found"],
+                    "Relief pitches": away_bp["team_pitches"],
+                    "Relief appearances": away_bp["team_appearances"],
+                    "Multi-day arms": away_bp["multi_day_arms"],
+                    "Max reliever pitches": away_bp["max_reliever_pitches"],
+                },
+                {
+                    "Team": item["home"],
+                    "Status": home_bp["status"],
+                    "Games found": home_bp["games_found"],
+                    "Relief pitches": home_bp["team_pitches"],
+                    "Relief appearances": home_bp["team_appearances"],
+                    "Multi-day arms": home_bp["multi_day_arms"],
+                    "Max reliever pitches": home_bp["max_reliever_pitches"],
+                },
+            ]
+        ),
+        use_container_width=True,
+        hide_index=True,
+    )
+    st.info(f"Full-game context: {item['full_game_context']}")
+
+    with st.expander(f"{item['away']} reliever detail"):
+        st.dataframe(pd.DataFrame(away_bp["relievers"]), use_container_width=True, hide_index=True)
+    with st.expander(f"{item['home']} reliever detail"):
+        st.dataframe(pd.DataFrame(home_bp["relievers"]), use_container_width=True, hide_index=True)
+
     st.subheader("Data completeness")
     availability = item["component_availability"]
     st.dataframe(
@@ -175,7 +211,7 @@ def render_game_card(analyses: list[dict]) -> None:
                 {"Component": "Starter handedness", "Status": f"{item['away_starter']}: {item['away_pitch_hand']} | {item['home_starter']}: {item['home_pitch_hand']}"},
                 {"Component": "Offense handedness splits", "Status": "Available" if item["component_availability"]["away_split"] and item["component_availability"]["home_split"] else "Partial / missing"},
                 {"Component": "Confirmed lineups", "Status": f"{item['lineup_status']} ({item['away_lineup_count']}/{item['home_lineup_count']})"},
-                {"Component": "Bullpen workload", "Status": item["bullpen_status"]},
+                {"Component": "Bullpen workload", "Status": f"{item['away']}: {item['away_bullpen']['status']} | {item['home']}: {item['home_bullpen']['status']}"},
                 {"Component": "Sportsbook odds", "Status": "Manual submission below"},
             ]
         ),
@@ -366,7 +402,7 @@ def render_journal() -> None:
         )
 
 
-st.title("⚾ MLB Trading Desk v0.4")
+st.title("⚾ MLB Trading Desk v0.5")
 with st.sidebar:
     selected_date = st.date_input("Game date", value=date.today()).isoformat()
     page = st.radio("Workspace", ["Dashboard", "Slate", "Game Card", "Live Desk", "Journal"])
