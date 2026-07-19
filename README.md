@@ -1,80 +1,59 @@
 # MLB Trading Desk
 
-## Version: v0.3.1 — Scoring Integrity Pass
+## Version: v0.4 — Matchup Intelligence
 
-This release corrects the interpretation and missing-data problems identified in the v0.3 review.
+This release moves the app beyond season-only comparisons.
 
-## What changed
+## New automation
 
-- Missing stats remain `N/A`; no fallback ERA, WHIP, AVG, OBP, SLG, or OPS values are displayed as retrieved data.
-- **Research Priority Score** is renamed **Matchup Separation Score**.
-- **Preliminary lean** is renamed **Baseball-side advantage**.
-- Pregame classifications are now strictly premarket:
-  - `TOP MATCHUP`
-  - `REVIEW`
-  - `LOW SEPARATION`
+- Probable starter throwing hand
+- Team offense versus right-handed or left-handed pitching
+- Matchup-adjusted offense score
+- Team offense context over the last 14 and 30 days
+- Starter recent-30-day context
+- Lineup readiness using MLB boxscore batting-order availability
+- Readiness labels:
+  - `READY FOR PRICE`
+  - `AWAIT LINEUPS`
+  - `PARTIAL LINEUPS`
   - `DATA CHECK`
-- Market status remains `MARKET PENDING` until the user explicitly submits two-sided odds.
-- Default `-110/-110` inputs no longer count as real market data until submitted.
-- The Game Card labels offense as **Season offense baseline**.
-- Strategy Packets distinguish:
-  - retrieved data
-  - inferred app output
-  - missing/not-yet-automated data
-  - manually entered market data
-  - user-entered context
-- Dashboard shows the last refresh time.
-- Low-confidence games cannot create artificial edges from missing values.
 
-## Important interpretation
+## Scoring behavior
 
-The Matchup Separation Score answers:
+The offense matchup score uses:
 
-> How large is the measurable difference between the teams in the current Phase 1 data?
+- 55% season offense baseline
+- 45% offense versus the opposing starter's handedness
 
-It does not answer:
+Recent 14- and 30-day performance is shown as context and is not yet heavily weighted into the separation score.
 
-> What is the exact probability that either team wins?
+## Interpretation
 
-It also does not establish betting value. Betting value remains unknown until current two-sided sportsbook odds are submitted and reviewed.
+The app now answers:
 
-## Current automated data
+1. Which games show meaningful baseball separation?
+2. Is that separation supported by the handedness matchup?
+3. Is recent form reinforcing or contradicting the season profile?
+4. Are lineups sufficiently available to begin price review?
 
-- MLB schedule
-- probable starters
-- starter season stats
-- season offense baselines
-- starter and offense component comparisons
-- Matchup Separation Score
-- data confidence
-- market hold and no-vig calculation after explicit odds submission
-- structured Strategy Packet
-- live MLB game feed
+It still does not claim a calibrated win probability.
 
 ## Current limitations
 
-- Bullpen workload is not integrated.
-- Confirmed lineups are not integrated.
-- Injuries and late scratches are not integrated.
-- Handedness and recent-form splits are not integrated.
+- Bullpen workload remains pending.
+- Injury and late-scratch news is not integrated.
 - Sportsbook odds remain manual.
-- Journal entries remain session-based.
-- Live trigger logic is not yet connected to the Game Card.
-- The system does not place wagers or guarantee profitable outcomes.
+- Lineup detection depends on MLB boxscore availability and timing.
+- Public MLB API fields can be incomplete or change.
+- Journal storage remains session-based.
 
-## Installation
+## Expected remaining roadmap
 
-```bash
-pip install streamlit pandas requests
-streamlit run app.py
-```
+The first complete product is expected after approximately four additional meaningful releases:
 
-## Next planned phase
+- **v0.5:** Bullpen availability and workload
+- **v0.6:** Saved market inputs and target-price logic
+- **v0.7:** Live thesis and trigger engine
+- **v0.8:** Persistent journal, CLV, and validation analytics
 
-After this integrity release is validated in Streamlit, the next build should add:
-
-1. starter handedness and team offense splits
-2. confirmed lineup status
-3. bullpen usage over the prior three days
-4. saved market inputs
-5. live thesis triggers
+After v0.8, releases should be refinements rather than major missing workflow layers.
