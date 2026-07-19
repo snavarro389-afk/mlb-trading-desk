@@ -1,55 +1,29 @@
-
 # MLB Trading Desk
 
-A local Streamlit dashboard that pulls live game information from MLB's Stats API and turns it into a transparent live-game decision aid.
+A Streamlit decision-support dashboard for MLB betting research and live-game monitoring.
 
-## What it currently tracks
+## Current version: v0.2 workflow foundation
 
-- Live score and inning
-- Pitch count
-- Strikes and strike percentage
-- Strikeouts and walks
-- Hits, earned runs, and home runs
-- Pitch velocity
-- Exit velocity
-- Hard-hit balls, defined as 95+ mph
-- A clearly labeled barrel proxy
-- Manual sportsbook moneyline input
-- No-vig probability
-- Manual model probability and fair moneyline
-- A transparent 0–100 live pitcher score
+The app is organized into four workspaces:
+
+- **Home:** Full MLB slate for the selected date
+- **Pregame:** Research checklist and BET / WATCH / PASS classification
+- **Live:** Existing pitch-level dashboard, contact quality, and market comparison
+- **Journal:** Session-based wager and tracked-pass journal with CSV export
+
+The workflow is intended for every MLB game day, including weekends. Postseason-specific logic will be added later.
 
 ## Installation
 
 1. Install Python 3.11 or newer.
-2. Open Terminal or PowerShell in this folder.
-3. Create a virtual environment:
-
-```bash
-python -m venv .venv
-```
-
-4. Activate it.
-
-macOS/Linux:
-
-```bash
-source .venv/bin/activate
-```
-
-Windows:
-
-```powershell
-.venv\Scripts\activate
-```
-
-5. Install dependencies:
+2. Create and activate a virtual environment.
+3. Install dependencies:
 
 ```bash
 pip install -r requirements.txt
 ```
 
-6. Run the dashboard:
+4. Run:
 
 ```bash
 streamlit run app.py
@@ -57,18 +31,17 @@ streamlit run app.py
 
 ## Important limitations
 
-- MLB's Stats API is reachable publicly but is not presented as a fully supported consumer API.
-- Live-feed fields can change.
-- The "barrel proxy" is not MLB's official barrel classification.
-- DraftKings does not provide a simple free public API for this use case, so odds are entered manually.
-- Polymarket integration should be added only after reviewing its current official API documentation and market-resolution rules.
+- The live pitcher score remains a transparent heuristic, not a calibrated predictive model.
+- Journal entries are stored only in the active Streamlit session; download the CSV before the session resets.
+- Odds remain manual.
+- The barrel proxy is not MLB's official barrel classification.
+- MLB live-feed fields can change.
 - This tool does not guarantee profitable betting outcomes.
 
-## Next model upgrades
+## Next logical upgrades
 
-1. Store snapshots every inning in SQLite.
-2. Add bullpen workload from the prior three days.
-3. Add expected run expectancy by base-out state.
-4. Add handedness and lineup splits.
-5. Calibrate the score against historical live-game outcomes.
-6. Add a bet journal with closing-line value and realized ROI.
+1. Persist the journal using SQLite or a cloud data store.
+2. Move scoring weights fully into `model_config.json`.
+3. Add bullpen usage from the prior three days.
+4. Add official lineup and handedness data.
+5. Add historical calibration and closing-line-value tracking.
