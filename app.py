@@ -30,7 +30,7 @@ def show_value(value, digits: int = 2):
 
 def render_dashboard(analyses: list[dict], selected_date: str, refreshed_at: str) -> None:
     st.header("Decision Dashboard")
-    st.caption("Automated premarket triage. Scores measure matchup separation, not win probability or betting value.")
+    st.caption("Matchup intelligence using starter handedness, offense splits, recent context, and lineup readiness. Scores are not win probabilities.")
     counts = pd.Series([row["premarket_status"] for row in analyses]).value_counts()
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Games", len(analyses))
@@ -49,16 +49,12 @@ def render_dashboard(analyses: list[dict], selected_date: str, refreshed_at: str
     if incomplete:
         st.warning(f"{incomplete} game(s) have incomplete Phase 1 data. Missing values are shown as N/A and do not create artificial edges.")
 
-    st.info(
-        "Phase 1 includes probable starters, starter season data, season offense baselines, "
-        "matchup separation, confidence, manual market input, and the Strategy Packet. "
-        "Bullpen workload, confirmed lineups, injuries, handedness splits, recent form, and automated odds remain future layers."
-    )
+    st.info("v0.4 adds starter handedness, offense versus that handedness, 14/30-day context, pitcher recent-30 context, and lineup readiness. Bullpen workload, injury context, and automated odds remain future layers.")
 
 
 def render_slate(analyses: list[dict]) -> None:
     st.header("Automated Slate")
-    st.caption("Premarket view of the entire day. Market value remains unknown until odds are submitted on a Game Card.")
+    st.caption("Premarket matchup view. Use Readiness to see whether a game is ready for price review or still awaiting lineups/data.")
     if not analyses:
         st.info("No games available.")
         return
@@ -92,7 +88,7 @@ def render_game_card(analyses: list[dict]) -> None:
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Separation score", show_value(item["separation_score"], 1))
-    c2.metric("Premarket status", item["premarket_status"])
+    c2.metric("Readiness", item["readiness"])
     c3.metric("Baseball-side advantage", item["baseball_advantage"])
     c4.metric("Confidence", f"{item['confidence']} · {item['completeness']}%")
 
@@ -126,13 +122,18 @@ def render_game_card(analyses: list[dict]) -> None:
         hide_index=True,
     )
 
-    st.subheader("Season offense baseline")
+    st.subheader("Offense matchup intelligence")
     st.dataframe(
         pd.DataFrame(
             [
                 {
                     "Team": item["away"],
-                    "Score": show_value(item["away_off_score"], 1),
+                    "Season baseline": show_value(item["away_off_score"], 1),
+                    f"Vs {item['home_pitch_hand']}HP": show_value(item["away_split_score"], 1),
+                    "Matchup score": show_value(item["away_matchup_off_score"], 1),
+                    "Recent 14": show_value(item["away_recent14_score"], 1),
+                    "Recent 30": show_value(item["away_recent30_score"], 1),
+                    "Trend": item["away_recent_trend"],
                     "AVG": show_value(d.get("Away_AVG"), 3),
                     "OBP": show_value(d.get("Away_OBP"), 3),
                     "SLG": show_value(d.get("Away_SLG"), 3),
@@ -142,7 +143,12 @@ def render_game_card(analyses: list[dict]) -> None:
                 },
                 {
                     "Team": item["home"],
-                    "Score": show_value(item["home_off_score"], 1),
+                    "Season baseline": show_value(item["home_off_score"], 1),
+                    f"Vs {item['away_pitch_hand']}HP": show_value(item["home_split_score"], 1),
+                    "Matchup score": show_value(item["home_matchup_off_score"], 1),
+                    "Recent 14": show_value(item["home_recent14_score"], 1),
+                    "Recent 30": show_value(item["home_recent30_score"], 1),
+                    "Trend": item["home_recent_trend"],
                     "AVG": show_value(d.get("Home_AVG"), 3),
                     "OBP": show_value(d.get("Home_OBP"), 3),
                     "SLG": show_value(d.get("Home_SLG"), 3),
@@ -166,7 +172,9 @@ def render_game_card(analyses: list[dict]) -> None:
                 {"Component": "Home starter season stats", "Status": "Available" if availability["home_starter"] else "Missing"},
                 {"Component": "Away season offense", "Status": "Available" if availability["away_offense"] else "Missing"},
                 {"Component": "Home season offense", "Status": "Available" if availability["home_offense"] else "Missing"},
-                {"Component": "Confirmed lineups", "Status": item["lineup_status"]},
+                {"Component": "Starter handedness", "Status": f"{item['away_starter']}: {item['away_pitch_hand']} | {item['home_starter']}: {item['home_pitch_hand']}"},
+                {"Component": "Offense handedness splits", "Status": "Available" if item["component_availability"]["away_split"] and item["component_availability"]["home_split"] else "Partial / missing"},
+                {"Component": "Confirmed lineups", "Status": f"{item['lineup_status']} ({item['away_lineup_count']}/{item['home_lineup_count']})"},
                 {"Component": "Bullpen workload", "Status": item["bullpen_status"]},
                 {"Component": "Sportsbook odds", "Status": "Manual submission below"},
             ]
@@ -358,7 +366,7 @@ def render_journal() -> None:
         )
 
 
-st.title("⚾ MLB Trading Desk")
+st.title("⚾ MLB Trading Desk v0.4")
 with st.sidebar:
     selected_date = st.date_input("Game date", value=date.today()).isoformat()
     page = st.radio("Workspace", ["Dashboard", "Slate", "Game Card", "Live Desk", "Journal"])
@@ -374,7 +382,7 @@ except Exception as exc:
     st.error(f"Could not reach MLB Stats API: {exc}")
     games = []
 
-analyses = analyze_slate(games, CURRENT_SEASON) if page in {"Dashboard", "Slate", "Game Card"} and games else []
+analyses = analyze_slate(games, CURRENT_SEASON, selected_date) if page in {"Dashboard", "Slate", "Game Card"} and games else []
 
 if page == "Dashboard":
     render_dashboard(analyses, selected_date, st.session_state.last_refresh)
