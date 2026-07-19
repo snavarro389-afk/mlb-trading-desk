@@ -7,6 +7,7 @@ import streamlit as st
 
 from data_sources import (
     get_lineup_status,
+    get_team_bullpen_workload,
     get_person_pitch_hand,
     get_person_stats,
     get_pitcher_recent,
@@ -276,6 +277,34 @@ def analyze_game(game: dict[str, Any], season: int, selected_date: str) -> dict[
         "home_count": 0,
     }
 
+    try:
+        away_bullpen = get_team_bullpen_workload(int(away_team_id), selected_date, 3) if away_team_id else {
+            "status": "UNAVAILABLE", "availability_score": None, "games_found": 0,
+            "team_pitches": 0, "team_appearances": 0, "multi_day_arms": 0,
+            "max_reliever_pitches": 0, "relievers": [],
+        }
+    except Exception as exc:
+        errors.append(f"away bullpen unavailable: {exc}")
+        away_bullpen = {
+            "status": "UNAVAILABLE", "availability_score": None, "games_found": 0,
+            "team_pitches": 0, "team_appearances": 0, "multi_day_arms": 0,
+            "max_reliever_pitches": 0, "relievers": [],
+        }
+
+    try:
+        home_bullpen = get_team_bullpen_workload(int(home_team_id), selected_date, 3) if home_team_id else {
+            "status": "UNAVAILABLE", "availability_score": None, "games_found": 0,
+            "team_pitches": 0, "team_appearances": 0, "multi_day_arms": 0,
+            "max_reliever_pitches": 0, "relievers": [],
+        }
+    except Exception as exc:
+        errors.append(f"home bullpen unavailable: {exc}")
+        home_bullpen = {
+            "status": "UNAVAILABLE", "availability_score": None, "games_found": 0,
+            "team_pitches": 0, "team_appearances": 0, "multi_day_arms": 0,
+            "max_reliever_pitches": 0, "relievers": [],
+        }
+
     availability = {
         "away_starter": asp is not None,
         "home_starter": hsp is not None,
@@ -321,6 +350,22 @@ def analyze_game(game: dict[str, Any], season: int, selected_date: str) -> dict[
     premarket_status = premarket_classification(separation_score, confidence)
     readiness = readiness_status(lineup["status"], confidence)
 
+    away_bp_score = away_bullpen.get("availability_score")
+    home_bp_score = home_bullpen.get("availability_score")
+    bullpen_edge = (
+        round(float(home_bp_score) - float(away_bp_score), 1)
+        if away_bp_score is not None and home_bp_score is not None
+        else None
+    )
+    if away_bullpen["status"] == "CONCERNING" and home_bullpen["status"] in {"RESTED", "LIMITED"}:
+        full_game_context = f"{home} bullpen availability advantage"
+    elif home_bullpen["status"] == "CONCERNING" and away_bullpen["status"] in {"RESTED", "LIMITED"}:
+        full_game_context = f"{away} bullpen availability advantage"
+    elif away_bullpen["status"] == home_bullpen["status"]:
+        full_game_context = "No clear bullpen availability separation"
+    else:
+        full_game_context = "Mixed bullpen availability"
+
     details = {
         **aspd, **hspd, **aoffd, **hoffd, **asplitd, **hsplitd,
         **a14d, **h14d, **a30d, **h30d, **apr30d, **hpr30d,
@@ -362,7 +407,10 @@ def analyze_game(game: dict[str, Any], season: int, selected_date: str) -> dict[
         "lineup_status": lineup["status"],
         "away_lineup_count": lineup["away_count"],
         "home_lineup_count": lineup["home_count"],
-        "bullpen_status": "Phase 2",
+        "away_bullpen": away_bullpen,
+        "home_bullpen": home_bullpen,
+        "bullpen_edge": bullpen_edge,
+        "full_game_context": full_game_context,
         "errors": errors,
         "component_availability": availability,
         "details": details,
@@ -413,6 +461,8 @@ def slate_frame(items: list[dict[str, Any]]) -> pd.DataFrame:
                 "Starter edge": edge_label(item, "starter_edge"),
                 "Matchup offense edge": edge_label(item, "offense_edge"),
                 "Recent form": f"{item['away']}: {item['away_recent_trend']} | {item['home']}: {item['home_recent_trend']}",
+                "Bullpens": f"{item['away']}: {item['away_bullpen']['status']} | {item['home']}: {item['home_bullpen']['status']}",
+                "Full-game context": item["full_game_context"],
                 "Lineups": item["lineup_status"],
                 "Readiness": item["readiness"],
                 "Confidence": item["confidence"],
