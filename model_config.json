@@ -1,0 +1,14 @@
+{
+  "version": "0.1",
+  "live_score_weights": {
+    "command": 22,
+    "pitch_efficiency": 18,
+    "walk_control": 12,
+    "strikeouts": 12,
+    "contact_suppression": 18,
+    "average_exit_velocity": 8,
+    "market_edge": 10
+  },
+  "hard_hit_definition_mph": 95,
+  "warning": "Heuristic score. Must be calibrated on historical data before treating it as predictive."
+}
