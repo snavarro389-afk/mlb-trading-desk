@@ -16,16 +16,19 @@ from data_sources import (
     pitcher_lines,
 )
 from scoring import analyze_slate, market_classification, slate_frame
-from strategy_packet import MarketPrice, build_strategy_packet
+from strategy_packet import build_strategy_packet
+from market_engine import classify_decision, no_vig_probabilities
 from storage import (
     database_status,
     load_bets,
+    load_decisions,
     load_reviews,
     load_snapshots,
     register_model_version,
     save_bet,
     save_bet_review,
     save_market_snapshot,
+    save_research_decision,
     update_bet_result,
 )
 
@@ -230,112 +233,185 @@ def render_game_card(analyses: list[dict]) -> None:
         hide_index=True,
     )
 
-    st.subheader("Market input and strategy handoff")
+    st.subheader("Market Workspace")
+    st.caption(
+        "The app compares the current sportsbook price with your preferred and maximum acceptable prices. "
+        "It does not convert the matchup score into a win probability."
+    )
+
     market = st.selectbox(
         "Market",
-        ["Full-game ML", "F5 ML", "F5 -0.5", "Run line", "Total", "Live only"],
+        ["Full-game ML", "F5 ML", "F5 -0.5", "Run line", "Total", "Player prop", "Live only"],
         key=f"market-{item['game_pk']}",
     )
-    submit_key = f"market-submitted-{item['game_pk']}"
-    st.session_state.setdefault(submit_key, False)
+    sportsbook = st.selectbox(
+        "Sportsbook",
+        ["DraftKings", "FanDuel", "BetMGM", "Caesars", "Other"],
+        key=f"sportsbook-{item['game_pk']}",
+    )
 
     with st.form(f"market-form-{item['game_pk']}"):
         m1, m2 = st.columns(2)
         with m1:
-            away_odds = st.number_input(
-                f"{item['away']} odds",
-                value=-110,
-                step=1,
-                key=f"away-{item['game_pk']}",
-            )
+            away_odds = st.number_input(f"{item['away']} odds", value=-110, step=1)
         with m2:
-            home_odds = st.number_input(
-                f"{item['home']} odds",
-                value=-110,
-                step=1,
-                key=f"home-{item['game_pk']}",
-            )
-        submitted = st.form_submit_button("Submit current market", type="primary")
+            home_odds = st.number_input(f"{item['home']} odds", value=-110, step=1)
+        submitted = st.form_submit_button("Analyze current market", type="primary")
 
+    state_key = f"market-state-{item['game_pk']}"
     if submitted:
-        st.session_state[submit_key] = True
+        st.session_state[state_key] = {"away": int(away_odds), "home": int(home_odds)}
 
+    odds_state = st.session_state.get(state_key)
     notes = st.text_area(
-        "Optional context not yet automated",
-        placeholder="Paste lineup changes, alternate markets, injury news, or screenshot observations.",
+        "Context or thesis notes",
+        placeholder="Lineup news, market movement, injury context, or reasons the price target was chosen.",
         key=f"notes-{item['game_pk']}",
     )
 
-    odds_submitted = bool(st.session_state[submit_key])
-    final_market_status = market_classification(
-        item["premarket_status"],
-        item["confidence"],
-        odds_submitted,
-        notes_present=bool(notes.strip()),
-    )
-
-    if odds_submitted:
-        away_raw = MarketPrice(int(away_odds)).implied_probability
-        home_raw = MarketPrice(int(home_odds)).implied_probability
-        total = away_raw + home_raw
-        v1, v2, v3, v4 = st.columns(4)
-        v1.metric(f"{item['away']} no-vig", f"{away_raw / total:.1%}")
-        v2.metric(f"{item['home']} no-vig", f"{home_raw / total:.1%}")
-        v3.metric("Market hold", f"{total - 1:.1%}")
-        v4.metric("Market status", final_market_status)
-        packet_away, packet_home = int(away_odds), int(home_odds)
+    if not odds_state:
+        st.warning("Submit a two-sided market before evaluating a price decision.")
     else:
-        st.warning("Market value is unknown. Submit current two-sided odds before using the market classification.")
-        packet_away, packet_home = None, None
+        away_odds = int(odds_state["away"])
+        home_odds = int(odds_state["home"])
+        try:
+            away_nv, home_nv, hold = no_vig_probabilities(away_odds, home_odds)
+        except ValueError as exc:
+            st.error(str(exc))
+            return
 
-    packet = build_strategy_packet(
-        item,
-        market,
-        packet_away,
-        packet_home,
-        notes,
-        final_market_status,
-    )
+        v1, v2, v3, v4 = st.columns(4)
+        v1.metric(f"{item['away']} no-vig", f"{away_nv:.1%}")
+        v2.metric(f"{item['home']} no-vig", f"{home_nv:.1%}")
+        v3.metric("Sportsbook hold", f"{hold:.1%}")
+        v4.metric("Research lean", item["baseball_advantage"])
+        st.caption("No-vig probability describes the current market consensus after removing hold; it is not the model's fair probability.")
 
-    if odds_submitted:
         selection = st.selectbox(
-            "Snapshot selection",
+            "Side being evaluated",
             [item["away"], item["home"]],
-            key=f"snapshot-selection-{item['game_pk']}",
+            index=0 if item["baseball_advantage"] == item["away"] else 1,
+            key=f"decision-selection-{item['game_pk']}",
         )
-        if selection == item["away"]:
-            selected_odds = int(away_odds)
-            opposing = int(home_odds)
-            selected_no_vig = away_raw / total
-        else:
-            selected_odds = int(home_odds)
-            opposing = int(away_odds)
-            selected_no_vig = home_raw / total
+        selected_odds = away_odds if selection == item["away"] else home_odds
+        opposing_odds = home_odds if selection == item["away"] else away_odds
+        selected_no_vig = away_nv if selection == item["away"] else home_nv
 
-        if st.button("Save market snapshot", key=f"save-snapshot-{item['game_pk']}"):
-            try:
-                snapshot_id = save_market_snapshot(
-                    item=item,
-                    game_date=selected_date,
-                    market_type=market,
-                    selection=selection,
-                    selection_odds=selected_odds,
-                    opposing_odds=opposing,
-                    no_vig_probability=selected_no_vig,
-                    market_status=final_market_status,
-                    notes=notes,
-                )
-                st.session_state["latest_snapshot_id"] = snapshot_id
-                st.success("Market snapshot saved to Supabase.")
-            except Exception as exc:
-                st.error(f"Could not save snapshot: {exc}")
-    st.text_area("Copy into the Betting Strategy thread", value=packet, height=500)
-    st.download_button(
-        "Download strategy packet",
-        packet.encode("utf-8"),
-        f"strategy_packet_{item['game_pk']}.txt",
-        "text/plain",
-    )
+        p1, p2 = st.columns(2)
+        with p1:
+            target_odds = st.number_input(
+                "Preferred target price",
+                value=int(selected_odds),
+                step=1,
+                key=f"target-{item['game_pk']}-{selection}",
+                help="The price you would prefer to receive. Example: -135.",
+            )
+        with p2:
+            maximum_odds = st.number_input(
+                "Maximum acceptable price",
+                value=int(selected_odds - 5),
+                step=1,
+                key=f"maximum-{item['game_pk']}-{selection}",
+                help="The worst price you would still consider. Example: -140. A larger number is always a better bettor price.",
+            )
+
+        final_action = st.selectbox(
+            "Final action",
+            ["UNDECIDED", "WAIT", "PASS", "BET PLACED"],
+            key=f"final-action-{item['game_pk']}",
+        )
+
+        try:
+            decision = classify_decision(
+                selection=selection,
+                research_lean=item["baseball_advantage"],
+                confidence=item["confidence"],
+                readiness=item["readiness"],
+                current_odds=int(selected_odds),
+                target_odds=int(target_odds),
+                maximum_odds=int(maximum_odds),
+            )
+        except ValueError as exc:
+            st.error(str(exc))
+            decision = None
+
+        if decision:
+            d1, d2, d3 = st.columns(3)
+            d1.metric("Recommendation", decision.recommendation)
+            d2.metric("Price status", decision.price_status)
+            d3.metric("Lifecycle", decision.lifecycle_status)
+            st.info(decision.rationale)
+
+            snapshot_id = st.session_state.get(f"latest-snapshot-{item['game_pk']}")
+            a1, a2 = st.columns(2)
+            with a1:
+                if st.button("Save market snapshot", key=f"save-snapshot-{item['game_pk']}"):
+                    try:
+                        snapshot_id = save_market_snapshot(
+                            item=item,
+                            game_date=selected_date,
+                            market_type=market,
+                            selection=selection,
+                            selection_odds=int(selected_odds),
+                            opposing_odds=int(opposing_odds),
+                            no_vig_probability=float(selected_no_vig),
+                            market_status=decision.recommendation,
+                            notes=notes,
+                            sportsbook=sportsbook,
+                        )
+                        st.session_state[f"latest-snapshot-{item['game_pk']}"] = snapshot_id
+                        st.session_state["latest_snapshot_id"] = snapshot_id
+                        st.success("Market snapshot saved to Supabase.")
+                    except Exception as exc:
+                        st.error(f"Could not save snapshot: {exc}")
+            with a2:
+                if st.button("Save decision evaluation", type="primary", key=f"save-decision-{item['game_pk']}"):
+                    try:
+                        decision_id = save_research_decision(
+                            snapshot_id=snapshot_id,
+                            item=item,
+                            game_date=selected_date,
+                            sportsbook=sportsbook,
+                            market_type=market,
+                            selection=selection,
+                            current_odds=int(selected_odds),
+                            opposing_odds=int(opposing_odds),
+                            no_vig_probability=float(selected_no_vig),
+                            market_hold=float(hold),
+                            target_odds=int(target_odds),
+                            maximum_odds=int(maximum_odds),
+                            recommendation=decision.recommendation,
+                            lifecycle_status=decision.lifecycle_status,
+                            price_status=decision.price_status,
+                            final_action=final_action,
+                            rationale=decision.rationale,
+                            notes=notes,
+                        )
+                        st.success(f"Decision evaluation saved. ID: {decision_id}")
+                    except Exception as exc:
+                        st.error(f"Could not save decision: {exc}")
+
+            packet = build_strategy_packet(
+                item, market, away_odds, home_odds, notes, decision.recommendation
+            )
+            packet += (
+                f"\n\nMARKET WORKSPACE\n"
+                f"Sportsbook: {sportsbook}\n"
+                f"Evaluated selection: {selection} {selected_odds:+d}\n"
+                f"No-vig market probability: {selected_no_vig:.1%}\n"
+                f"Target price: {int(target_odds):+d}\n"
+                f"Maximum acceptable: {int(maximum_odds):+d}\n"
+                f"Recommendation: {decision.recommendation}\n"
+                f"Final action: {final_action}\n"
+                f"Rationale: {decision.rationale}"
+            )
+            st.text_area("Copy into the Betting Strategy thread", value=packet, height=500)
+            st.download_button(
+                "Download strategy packet",
+                packet.encode("utf-8"),
+                f"strategy_packet_{item['game_pk']}.txt",
+                "text/plain",
+            )
 
     if item["errors"]:
         with st.expander("Data retrieval warnings"):
@@ -398,7 +474,7 @@ def render_journal() -> None:
         st.caption(message)
         return
 
-    tabs = st.tabs(["New bet", "Settle bet", "Review bet", "Stored bets", "Market snapshots"])
+    tabs = st.tabs(["New bet", "Settle bet", "Review bet", "Stored bets", "Market snapshots", "Decision history"])
 
     with tabs[0]:
         c1, c2, c3 = st.columns(3)
@@ -527,7 +603,21 @@ def render_journal() -> None:
             )
 
 
-st.title("⚾ MLB Trading Desk v0.5.1")
+    with tabs[5]:
+        decisions = load_decisions()
+        if decisions.empty:
+            st.info("No decision evaluations saved yet.")
+        else:
+            st.dataframe(decisions, use_container_width=True, hide_index=True)
+            st.download_button(
+                "Download decisions CSV",
+                decisions.to_csv(index=False).encode("utf-8"),
+                "mlb_research_decisions_backup.csv",
+                "text/csv",
+            )
+
+
+st.title("⚾ MLB Trading Desk v0.6")
 with st.sidebar:
     selected_date = st.date_input("Game date", value=date.today()).isoformat()
     page = st.radio("Workspace", ["Dashboard", "Slate", "Game Card", "Live Desk", "Journal"])
