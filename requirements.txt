@@ -1,3 +1,4 @@
-streamlit>=1.37
-pandas>=2.2
-requests>=2.32
+streamlit
+pandas
+requests
+supabase
