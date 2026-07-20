@@ -10,6 +10,7 @@ from data_sources import (
     batted_ball_events,
     command_summary,
     contact_summary,
+    extract_live_thesis_inputs,
     game_label,
     get_live_feed,
     get_schedule,
@@ -1049,6 +1050,7 @@ def render_live_thesis_workspace(
     inning_half: str,
     outs: int,
     game_status: str,
+    feed: dict[str, Any],
 ) -> None:
     st.divider()
     st.header("Live Thesis Engine")
@@ -1090,6 +1092,90 @@ def render_live_thesis_workspace(
             }
         )
         return
+
+    try:
+        auto_inputs = extract_live_thesis_inputs(
+            feed,
+            selected_team,
+        )
+        automatic_feed_available = True
+    except Exception as exc:
+        automatic_feed_available = False
+        auto_inputs = {
+            "away_score": away_score,
+            "home_score": home_score,
+            "favored_score": (
+                home_score
+                if selected_team == home_team
+                else away_score
+            ),
+            "opponent_score": (
+                away_score
+                if selected_team == home_team
+                else home_score
+            ),
+            "inning": inning,
+            "inning_half": inning_half,
+            "outs": outs,
+            "runner_on_first": bool(
+                auto_inputs.get("runner_on_first")
+            ),
+            "runner_on_second": bool(
+                auto_inputs.get("runner_on_second")
+            ),
+            "runner_on_third": bool(
+                auto_inputs.get("runner_on_third")
+            ),
+            "tracked_pitcher_id": None,
+            "tracked_pitcher_name": "",
+            "pitch_count": 0,
+            "strikes": 0,
+            "first_pitch_strike_rate": None,
+            "pitcher_walks": 0,
+            "pitcher_strikeouts": 0,
+            "batters_faced": 0,
+            "pitcher_hard_hits_allowed": 0,
+            "pitcher_barrels_allowed": 0,
+            "balls_in_play_against_pitcher": 0,
+            "favored_plate_appearances": 0,
+            "favored_hard_hits": 0,
+            "favored_barrels": 0,
+            "favored_walks": 0,
+            "favored_strikeouts": 0,
+            "favored_pitches_seen": 0,
+            "favored_starter_still_active": True,
+        }
+        st.warning(
+            "Automatic MLB field mapping was unavailable. "
+            f"Manual inputs remain active: {exc}"
+        )
+
+    away_score = safe_int(
+        auto_inputs.get("away_score"),
+        away_score,
+    )
+    home_score = safe_int(
+        auto_inputs.get("home_score"),
+        home_score,
+    )
+    inning = safe_int(
+        auto_inputs.get("inning"),
+        inning,
+    )
+    inning_half = str(
+        auto_inputs.get("inning_half")
+        or inning_half
+        or ""
+    )
+    outs = safe_int(
+        auto_inputs.get("outs"),
+        outs,
+    )
+    game_status = str(
+        auto_inputs.get("game_status")
+        or game_status
+        or ""
+    )
 
     opponent_team = (
         home_team
@@ -1204,10 +1290,30 @@ def render_live_thesis_workspace(
 
     st.subheader("Current live inputs")
     st.caption(
-        "MLB score and inning are populated from the live feed. "
-        "Command, contact, offense, bullpen, and sportsbook values remain "
-        "manual until the automatic field-mapping layer is validated."
+        "MLB game state, starter command, contact, and offensive-process "
+        "fields are prefilled from the live feed. Live odds, feed integrity, "
+        "and bullpen context remain manual. Every populated value can be overridden."
     )
+
+    if automatic_feed_available:
+        st.success(
+            "Automatic MLB field mapping loaded for this game."
+        )
+
+        with st.expander("Review automatic MLB inputs"):
+            st.dataframe(
+                pd.DataFrame(
+                    [
+                        {
+                            "Field": key,
+                            "MLB feed value": value,
+                        }
+                        for key, value in auto_inputs.items()
+                    ]
+                ),
+                use_container_width=True,
+                hide_index=True,
+            )
 
     feed_status = st.selectbox(
         "Feed integrity",
@@ -1259,14 +1365,19 @@ def render_live_thesis_workspace(
     with command_col1:
         current_pitcher_name = st.text_input(
             f"Current / tracked pitcher for {selected_team}",
-            value="",
+            value=str(
+                auto_inputs.get("tracked_pitcher_name")
+                or ""
+            ),
             key=f"live-pitcher-name-{game_pk}",
         )
 
         current_pitcher_id = st.number_input(
             "Pitcher MLB ID, optional",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("tracked_pitcher_id")
+            ),
             step=1,
             key=f"live-pitcher-id-{game_pk}",
         )
@@ -1274,7 +1385,9 @@ def render_live_thesis_workspace(
         pitch_count = st.number_input(
             "Pitch count",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("pitch_count")
+            ),
             step=1,
             key=f"live-pitch-count-{game_pk}",
         )
@@ -1283,7 +1396,9 @@ def render_live_thesis_workspace(
         strikes = st.number_input(
             "Total strikes",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("strikes")
+            ),
             step=1,
             key=f"live-strikes-{game_pk}",
         )
@@ -1291,7 +1406,9 @@ def render_live_thesis_workspace(
         pitcher_walks = st.number_input(
             "Walks issued",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("pitcher_walks")
+            ),
             step=1,
             key=f"live-pitcher-walks-{game_pk}",
         )
@@ -1299,7 +1416,9 @@ def render_live_thesis_workspace(
         batters_faced = st.number_input(
             "Batters faced",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("batters_faced")
+            ),
             step=1,
             key=f"live-batters-faced-{game_pk}",
         )
@@ -1310,7 +1429,15 @@ def render_live_thesis_workspace(
                 "First-pitch strike %",
                 min_value=0.0,
                 max_value=100.0,
-                value=0.0,
+                value=round(
+                    safe_float(
+                        auto_inputs.get(
+                            "first_pitch_strike_rate"
+                        )
+                    )
+                    * 100,
+                    1,
+                ),
                 step=1.0,
                 key=(
                     f"live-first-pitch-strike-"
@@ -1322,7 +1449,9 @@ def render_live_thesis_workspace(
         pitcher_strikeouts = st.number_input(
             "Pitcher strikeouts",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("pitcher_strikeouts")
+            ),
             step=1,
             key=f"live-pitcher-strikeouts-{game_pk}",
         )
@@ -1330,7 +1459,12 @@ def render_live_thesis_workspace(
         favored_starter_still_active = (
             st.checkbox(
                 f"{selected_team} starter is still active",
-                value=True,
+                value=bool(
+                    auto_inputs.get(
+                        "favored_starter_still_active",
+                        True,
+                    )
+                ),
                 key=(
                     f"live-starter-active-"
                     f"{game_pk}"
@@ -1368,7 +1502,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Hard-hit balls allowed",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "pitcher_hard_hits_allowed"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-hard-hits-allowed-"
@@ -1382,7 +1520,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Barrels allowed",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "pitcher_barrels_allowed"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-barrels-allowed-"
@@ -1396,7 +1538,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Balls in play against pitcher",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "balls_in_play_against_pitcher"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-bip-against-"
@@ -1418,7 +1564,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Plate appearances",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "favored_plate_appearances"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-offense-pa-"
@@ -1430,7 +1580,9 @@ def render_live_thesis_workspace(
         favored_hard_hits = st.number_input(
             "Hard-hit balls",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("favored_hard_hits")
+            ),
             step=1,
             key=(
                 f"live-offense-hard-hits-"
@@ -1442,7 +1594,9 @@ def render_live_thesis_workspace(
         favored_barrels = st.number_input(
             "Barrels",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("favored_barrels")
+            ),
             step=1,
             key=(
                 f"live-offense-barrels-"
@@ -1453,7 +1607,9 @@ def render_live_thesis_workspace(
         favored_walks = st.number_input(
             "Walks",
             min_value=0,
-            value=0,
+            value=safe_int(
+                auto_inputs.get("favored_walks")
+            ),
             step=1,
             key=(
                 f"live-offense-walks-"
@@ -1466,7 +1622,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Strikeouts",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "favored_strikeouts"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-offense-strikeouts-"
@@ -1479,7 +1639,11 @@ def render_live_thesis_workspace(
             st.number_input(
                 "Pitches seen",
                 min_value=0,
-                value=0,
+                value=safe_int(
+                    auto_inputs.get(
+                        "favored_pitches_seen"
+                    )
+                ),
                 step=1,
                 key=(
                     f"live-offense-pitches-seen-"
@@ -1973,6 +2137,11 @@ def render_live_thesis_workspace(
             ).astimezone().isoformat(),
             "metadata": {
                 "game_status": game_status,
+                "input_source": (
+                    "MLB_AUTO_WITH_MANUAL_OVERRIDES"
+                    if automatic_feed_available
+                    else "MANUAL_FALLBACK"
+                ),
                 "tracked_team": selected_team,
                 "opponent_team": opponent_team,
                 "target_odds": research_decision.get(
@@ -2104,7 +2273,7 @@ def render_live(
     st.header("Live Desk")
     st.caption(
         "Automated MLB game state plus command, velocity, and contact "
-        "monitoring. The v0.7 Live Thesis Engine compares live conditions "
+        "monitoring. The v0.7.1 Live Thesis Engine compares live conditions "
         "with the latest saved pregame decision."
     )
 
@@ -2231,6 +2400,7 @@ def render_live(
         inning_half=inning_half,
         outs=outs,
         game_status=game_status,
+        feed=feed,
     )
 
 
@@ -2623,7 +2793,7 @@ def render_journal() -> None:
             )
 
 
-st.title("⚾ MLB Trading Desk v0.7")
+st.title("⚾ MLB Trading Desk v0.7.1")
 
 with st.sidebar:
     selected_date = st.date_input(
