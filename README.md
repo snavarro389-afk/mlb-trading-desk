@@ -1,59 +1,39 @@
 # MLB Trading Desk
 
-## Version: v0.4 — Matchup Intelligence
+## Version: v0.5.1 — Supabase Persistence Foundation
 
-This release moves the app beyond season-only comparisons.
+This release replaces session-only storage with durable Supabase tables for games, market snapshots, bets, reviews, and model versions.
 
-## New automation
+## Setup
 
-- Probable starter throwing hand
-- Team offense versus right-handed or left-handed pitching
-- Matchup-adjusted offense score
-- Team offense context over the last 14 and 30 days
-- Starter recent-30-day context
-- Lineup readiness using MLB boxscore batting-order availability
-- Readiness labels:
-  - `READY FOR PRICE`
-  - `AWAIT LINEUPS`
-  - `PARTIAL LINEUPS`
-  - `DATA CHECK`
+1. Run `supabase_schema.sql` in Supabase SQL Editor.
+2. In Supabase Project Settings → API Keys, copy the Project URL and secret key.
+3. Add them to Streamlit Community Cloud → App Settings → Secrets:
 
-## Scoring behavior
+```toml
+SUPABASE_URL = "https://YOUR_PROJECT_REF.supabase.co"
+SUPABASE_SECRET_KEY = "sb_secret_REPLACE_ME"
+```
 
-The offense matchup score uses:
+4. Never commit the real key to GitHub.
+5. Reboot the app.
 
-- 55% season offense baseline
-- 45% offense versus the opposing starter's handedness
+The sidebar should display `Database: Connected`.
 
-Recent 14- and 30-day performance is shown as context and is not yet heavily weighted into the separation score.
+## Security
 
-## Interpretation
+Row Level Security is enabled. No public policies are created. The Streamlit server accesses the database with a secret key stored outside GitHub. Supabase secret/service-role keys bypass RLS and must remain private.
 
-The app now answers:
+## New workflow
 
-1. Which games show meaningful baseball separation?
-2. Is that separation supported by the handedness matchup?
-3. Is recent form reinforcing or contradicting the season profile?
-4. Are lineups sufficiently available to begin price review?
+- Save a market snapshot from the Game Card.
+- Store actual bets in the Persistent Journal.
+- Settle bets with result, profit/loss, and closing odds.
+- Add postgame thesis and execution reviews.
+- Download CSV backups.
 
-It still does not claim a calibrated win probability.
+## Remaining releases
 
-## Current limitations
-
-- Bullpen workload remains pending.
-- Injury and late-scratch news is not integrated.
-- Sportsbook odds remain manual.
-- Lineup detection depends on MLB boxscore availability and timing.
-- Public MLB API fields can be incomplete or change.
-- Journal storage remains session-based.
-
-## Expected remaining roadmap
-
-The first complete product is expected after approximately four additional meaningful releases:
-
-- **v0.5:** Bullpen availability and workload
-- **v0.6:** Saved market inputs and target-price logic
-- **v0.7:** Live thesis and trigger engine
-- **v0.8:** Persistent journal, CLV, and validation analytics
-
-After v0.8, releases should be refinements rather than major missing workflow layers.
+- v0.6: target prices and market-value workflow
+- v0.7: live synchronization and thesis triggers
+- v0.8: CLV, calibration, and validation analytics
