@@ -45,7 +45,12 @@ class LiveThesisResult:
     warning_reason: str
 
     active_thesis_killers: list[str]
-    score_components: dict[str, float]
+    score_components: dict[str, Any]
+
+    effective_feed_status: str
+    input_validation_status: str
+    missing_fields: list[str]
+    validation_issues: list[str]
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -67,6 +72,212 @@ def _safe_int(value: Any, default: int = 0) -> int:
         return int(value)
     except (TypeError, ValueError):
         return default
+
+
+VALIDATION_OK = "VALID"
+VALIDATION_INCOMPLETE = "INCOMPLETE"
+VALIDATION_CONFLICT = "CONFLICT"
+
+
+def validate_live_inputs(
+    *,
+    pitch_count: int | None,
+    strikes: int | None,
+    first_pitch_strike_rate: float | None,
+    pitcher_walks: int | None,
+    pitcher_strikeouts: int | None = None,
+    batters_faced: int | None,
+    pitcher_hard_hits_allowed: int | None,
+    pitcher_barrels_allowed: int | None,
+    balls_in_play_against_pitcher: int | None,
+    favored_plate_appearances: int | None,
+    favored_hard_hits: int | None,
+    favored_barrels: int | None,
+    favored_walks: int | None,
+    favored_strikeouts: int | None,
+    favored_pitches_seen: int | None,
+    inning: int | None,
+    favored_score: int | None,
+    opponent_score: int | None,
+) -> dict[str, Any]:
+    """
+    Validate live inputs without interpreting early-game zeros as missing data.
+
+    None means unavailable. Zero remains a valid observed value. Impossible
+    relationships are classified as conflicts so the engine cannot recommend
+    entry consideration from internally inconsistent feed data.
+    """
+    values = {
+        "pitch_count": pitch_count,
+        "strikes": strikes,
+        "first_pitch_strike_rate": first_pitch_strike_rate,
+        "pitcher_walks": pitcher_walks,
+        "batters_faced": batters_faced,
+        "pitcher_hard_hits_allowed": pitcher_hard_hits_allowed,
+        "pitcher_barrels_allowed": pitcher_barrels_allowed,
+        "balls_in_play_against_pitcher": balls_in_play_against_pitcher,
+        "favored_plate_appearances": favored_plate_appearances,
+        "favored_hard_hits": favored_hard_hits,
+        "favored_barrels": favored_barrels,
+        "favored_walks": favored_walks,
+        "favored_strikeouts": favored_strikeouts,
+        "favored_pitches_seen": favored_pitches_seen,
+        "inning": inning,
+        "favored_score": favored_score,
+        "opponent_score": opponent_score,
+    }
+
+    missing_fields = [
+        name
+        for name, value in values.items()
+        if value is None
+    ]
+    issues: list[str] = []
+
+    numeric_nonnegative = {
+        name: value
+        for name, value in values.items()
+        if name != "first_pitch_strike_rate"
+    }
+    if pitcher_strikeouts is not None:
+        numeric_nonnegative["pitcher_strikeouts"] = pitcher_strikeouts
+
+    for name, value in numeric_nonnegative.items():
+        if value is not None and _safe_float(value) < 0:
+            issues.append(f"{name} cannot be negative.")
+
+    pitch_count_value = _safe_int(pitch_count)
+    strikes_value = _safe_int(strikes)
+    walks_value = _safe_int(pitcher_walks)
+    pitcher_k_value = _safe_int(pitcher_strikeouts)
+    batters_value = _safe_int(batters_faced)
+    hard_hits_allowed_value = _safe_int(pitcher_hard_hits_allowed)
+    barrels_allowed_value = _safe_int(pitcher_barrels_allowed)
+    balls_in_play_value = _safe_int(balls_in_play_against_pitcher)
+
+    favored_pa_value = _safe_int(favored_plate_appearances)
+    favored_hard_hits_value = _safe_int(favored_hard_hits)
+    favored_barrels_value = _safe_int(favored_barrels)
+    favored_walks_value = _safe_int(favored_walks)
+    favored_strikeouts_value = _safe_int(favored_strikeouts)
+    favored_pitches_value = _safe_int(favored_pitches_seen)
+
+    if pitch_count is not None and strikes is not None:
+        if strikes_value > pitch_count_value:
+            issues.append("Total strikes cannot exceed pitch count.")
+
+    if first_pitch_strike_rate is not None:
+        first_pitch_value = _safe_float(first_pitch_strike_rate)
+        if not 0.0 <= first_pitch_value <= 1.0:
+            issues.append(
+                "First-pitch strike rate must be between 0.0 and 1.0."
+            )
+
+    if batters_faced is not None:
+        if walks_value > batters_value:
+            issues.append("Pitcher walks cannot exceed batters faced.")
+        if pitcher_strikeouts is not None and pitcher_k_value > batters_value:
+            issues.append(
+                "Pitcher strikeouts cannot exceed batters faced."
+            )
+        if balls_in_play_value > batters_value:
+            issues.append(
+                "Balls in play against the pitcher cannot exceed batters faced."
+            )
+
+    if pitcher_hard_hits_allowed is not None and balls_in_play_against_pitcher is not None:
+        if hard_hits_allowed_value > balls_in_play_value:
+            issues.append(
+                "Pitcher hard-hit balls cannot exceed balls in play."
+            )
+
+    if pitcher_barrels_allowed is not None and pitcher_hard_hits_allowed is not None:
+        if barrels_allowed_value > hard_hits_allowed_value:
+            issues.append(
+                "Pitcher barrels cannot exceed hard-hit balls."
+            )
+
+    if favored_plate_appearances is not None:
+        if favored_walks_value > favored_pa_value:
+            issues.append(
+                "Favored-team walks cannot exceed plate appearances."
+            )
+        if favored_strikeouts_value > favored_pa_value:
+            issues.append(
+                "Favored-team strikeouts cannot exceed plate appearances."
+            )
+        if favored_walks_value + favored_strikeouts_value > favored_pa_value:
+            issues.append(
+                "Favored-team walks plus strikeouts cannot exceed plate appearances."
+            )
+        if favored_hard_hits_value > favored_pa_value:
+            issues.append(
+                "Favored-team hard-hit balls cannot exceed plate appearances."
+            )
+
+    if favored_barrels is not None and favored_hard_hits is not None:
+        if favored_barrels_value > favored_hard_hits_value:
+            issues.append(
+                "Favored-team barrels cannot exceed hard-hit balls."
+            )
+
+    if favored_pitches_seen is not None and favored_plate_appearances is not None:
+        if favored_pa_value > 0 and favored_pitches_value < favored_pa_value:
+            issues.append(
+                "Pitches seen cannot be lower than completed plate appearances."
+            )
+
+    if inning is not None:
+        inning_value = _safe_int(inning)
+        if inning_value < 0:
+            issues.append("Inning cannot be negative.")
+
+    if issues:
+        status = VALIDATION_CONFLICT
+    elif missing_fields:
+        status = VALIDATION_INCOMPLETE
+    else:
+        status = VALIDATION_OK
+
+    return {
+        "status": status,
+        "missing_fields": missing_fields,
+        "issues": list(dict.fromkeys(issues)),
+    }
+
+
+def resolve_feed_status(
+    requested_feed_status: str,
+    validation_status: str,
+) -> str:
+    """
+    Combine the user's/feed-layer status with engine-level validation.
+
+    A conflict always wins. Missing values downgrade CURRENT to STALE. A
+    manually identified stale or conflict feed is never upgraded.
+    """
+    normalized = str(requested_feed_status or "").strip().upper()
+
+    if normalized not in {
+        FEED_CURRENT,
+        FEED_STALE,
+        FEED_CONFLICT,
+    }:
+        normalized = FEED_CONFLICT
+
+    if normalized == FEED_CONFLICT:
+        return FEED_CONFLICT
+
+    if validation_status == VALIDATION_CONFLICT:
+        return FEED_CONFLICT
+
+    if normalized == FEED_STALE:
+        return FEED_STALE
+
+    if validation_status == VALIDATION_INCOMPLETE:
+        return FEED_STALE
+
+    return FEED_CURRENT
 
 
 def american_odds_to_decimal(odds: int) -> float:
@@ -660,6 +871,7 @@ def evaluate_live_thesis(
     first_pitch_strike_rate: float | None,
     pitcher_walks: int | None,
     batters_faced: int | None,
+    pitcher_strikeouts: int | None = None,
 
     pitcher_hard_hits_allowed: int | None,
     pitcher_barrels_allowed: int | None,
@@ -683,6 +895,32 @@ def evaluate_live_thesis(
     favored_score: int | None,
     opponent_score: int | None,
 ) -> dict[str, Any]:
+    validation = validate_live_inputs(
+        pitch_count=pitch_count,
+        strikes=strikes,
+        first_pitch_strike_rate=first_pitch_strike_rate,
+        pitcher_walks=pitcher_walks,
+        pitcher_strikeouts=pitcher_strikeouts,
+        batters_faced=batters_faced,
+        pitcher_hard_hits_allowed=pitcher_hard_hits_allowed,
+        pitcher_barrels_allowed=pitcher_barrels_allowed,
+        balls_in_play_against_pitcher=balls_in_play_against_pitcher,
+        favored_plate_appearances=favored_plate_appearances,
+        favored_hard_hits=favored_hard_hits,
+        favored_barrels=favored_barrels,
+        favored_walks=favored_walks,
+        favored_strikeouts=favored_strikeouts,
+        favored_pitches_seen=favored_pitches_seen,
+        inning=inning,
+        favored_score=favored_score,
+        opponent_score=opponent_score,
+    )
+
+    effective_feed_status = resolve_feed_status(
+        feed_status,
+        validation["status"],
+    )
+
     command_status, command_score, command_killers = (
         grade_starter_command(
             pitch_count=pitch_count,
@@ -736,7 +974,7 @@ def evaluate_live_thesis(
     )
 
     normalized_feed_status, feed_score = grade_feed_confidence(
-        feed_status
+        effective_feed_status
     )
 
     score_components = {
@@ -762,9 +1000,20 @@ def evaluate_live_thesis(
         )
     )
 
+    if validation["status"] == VALIDATION_CONFLICT:
+        active_thesis_killers = list(
+            dict.fromkeys(
+                active_thesis_killers
+                + [
+                    "Live-feed input conflict requires data verification."
+                ]
+            )
+        )
+
     sample_ready = (
         command_status != "NOT READY"
         and offense_status != "NOT READY"
+        and validation["status"] == VALIDATION_OK
     )
 
     thesis_status = classify_thesis_status(
@@ -823,6 +1072,10 @@ def evaluate_live_thesis(
             **score_components,
             "game_state_status": game_state_status,
         },
+        effective_feed_status=normalized_feed_status,
+        input_validation_status=validation["status"],
+        missing_fields=validation["missing_fields"],
+        validation_issues=validation["issues"],
     )
 
     return result.to_dict()
