@@ -201,7 +201,9 @@ def pitch_events(feed: dict[str, Any]) -> pd.DataFrame:
                 {
                     "Inning": f"{play.get('about', {}).get('halfInning', '')[:1].upper()}{play.get('about', {}).get('inning')}",
                     "Pitcher": matchup.get("pitcher", {}).get("fullName", "Unknown"),
+                    "Pitcher ID": matchup.get("pitcher", {}).get("id"),
                     "Batter": matchup.get("batter", {}).get("fullName", "Unknown"),
+                    "Batter ID": matchup.get("batter", {}).get("id"),
                     "Pitch Type": details.get("type", {}).get("description", ""),
                     "Call": details.get("description", ""),
                     "Velocity": safe_number(data.get("startSpeed"), math.nan),
@@ -227,7 +229,9 @@ def batted_ball_events(feed: dict[str, Any]) -> pd.DataFrame:
                 {
                     "Inning": f"{play.get('about', {}).get('halfInning', '')[:1].upper()}{play.get('about', {}).get('inning')}",
                     "Batter": matchup.get("batter", {}).get("fullName", "Unknown"),
+                    "Batter ID": matchup.get("batter", {}).get("id"),
                     "Pitcher": matchup.get("pitcher", {}).get("fullName", "Unknown"),
+                    "Pitcher ID": matchup.get("pitcher", {}).get("id"),
                     "Result": play.get("result", {}).get("event", ""),
                     "Exit Velo": ev,
                     "Launch Angle": angle,
@@ -277,6 +281,408 @@ def contact_summary(bbe: pd.DataFrame) -> pd.DataFrame:
     )
     frame["Hard-Hit %"] = frame["Hard_Hits"] / frame["BBE"] * 100
     return frame.round({"Avg_EV": 1, "Max_EV": 1, "Hard-Hit %": 1})
+
+
+
+def safe_int(value: Any, default: int = 0) -> int:
+    try:
+        if value is None:
+            return default
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+def _team_side_from_name(
+    feed: dict[str, Any],
+    team_name: str,
+) -> str | None:
+    teams = feed.get("gameData", {}).get("teams", {})
+    normalized = str(team_name or "").strip().lower()
+
+    for side in ("away", "home"):
+        candidate = str(
+            teams.get(side, {}).get("name", "")
+        ).strip().lower()
+        if candidate == normalized:
+            return side
+
+    return None
+
+
+def _team_pitcher_ids(
+    feed: dict[str, Any],
+    side: str,
+) -> list[int]:
+    team_box = (
+        feed.get("liveData", {})
+        .get("boxscore", {})
+        .get("teams", {})
+        .get(side, {})
+    )
+    return [
+        safe_int(player_id)
+        for player_id in team_box.get("pitchers", [])
+        if safe_int(player_id) > 0
+    ]
+
+
+def _team_batter_ids(
+    feed: dict[str, Any],
+    side: str,
+) -> set[int]:
+    team_box = (
+        feed.get("liveData", {})
+        .get("boxscore", {})
+        .get("teams", {})
+        .get(side, {})
+    )
+    return {
+        safe_int(player_id)
+        for player_id in team_box.get("batters", [])
+        if safe_int(player_id) > 0
+    }
+
+
+def _player_record(
+    feed: dict[str, Any],
+    side: str,
+    player_id: int,
+) -> dict[str, Any]:
+    players = (
+        feed.get("liveData", {})
+        .get("boxscore", {})
+        .get("teams", {})
+        .get(side, {})
+        .get("players", {})
+    )
+    return (
+        players.get(f"ID{player_id}")
+        or players.get(str(player_id))
+        or {}
+    )
+
+
+def _starter_id(
+    feed: dict[str, Any],
+    side: str,
+) -> int | None:
+    for pitcher_id in _team_pitcher_ids(feed, side):
+        record = _player_record(feed, side, pitcher_id)
+        stats = record.get("stats", {}).get("pitching", {})
+        if safe_int(stats.get("gamesStarted")) > 0:
+            return pitcher_id
+
+    probable_id = safe_int(
+        feed.get("gameData", {})
+        .get("probablePitchers", {})
+        .get(side, {})
+        .get("id")
+    )
+    return probable_id if probable_id > 0 else None
+
+
+def _current_pitcher(
+    feed: dict[str, Any],
+) -> dict[str, Any]:
+    pitcher = (
+        feed.get("liveData", {})
+        .get("plays", {})
+        .get("currentPlay", {})
+        .get("matchup", {})
+        .get("pitcher", {})
+    )
+    return {
+        "id": safe_int(pitcher.get("id")) or None,
+        "name": pitcher.get("fullName"),
+    }
+
+
+def _runner_state(
+    feed: dict[str, Any],
+) -> dict[str, bool]:
+    offense = (
+        feed.get("liveData", {})
+        .get("linescore", {})
+        .get("offense", {})
+    )
+    return {
+        "runner_on_first": bool(offense.get("first")),
+        "runner_on_second": bool(offense.get("second")),
+        "runner_on_third": bool(offense.get("third")),
+    }
+
+
+def _first_pitch_strike_rate(
+    feed: dict[str, Any],
+    pitcher_id: int | None,
+) -> float | None:
+    if not pitcher_id:
+        return None
+
+    first_pitches = 0
+    first_pitch_strikes = 0
+
+    for play in (
+        feed.get("liveData", {})
+        .get("plays", {})
+        .get("allPlays", [])
+    ):
+        if safe_int(
+            play.get("matchup", {})
+            .get("pitcher", {})
+            .get("id")
+        ) != pitcher_id:
+            continue
+
+        first_pitch = next(
+            (
+                event
+                for event in play.get("playEvents", [])
+                if event.get("isPitch")
+            ),
+            None,
+        )
+        if not first_pitch:
+            continue
+
+        first_pitches += 1
+        if bool(first_pitch.get("details", {}).get("isStrike")):
+            first_pitch_strikes += 1
+
+    if first_pitches == 0:
+        return None
+
+    return first_pitch_strikes / first_pitches
+
+
+def _team_offense_totals(
+    feed: dict[str, Any],
+    side: str,
+    pitches: pd.DataFrame,
+    bbe: pd.DataFrame,
+) -> dict[str, int]:
+    team_box = (
+        feed.get("liveData", {})
+        .get("boxscore", {})
+        .get("teams", {})
+        .get(side, {})
+    )
+    batting = team_box.get("teamStats", {}).get("batting", {})
+    batter_ids = _team_batter_ids(feed, side)
+
+    pitches_seen = (
+        int(pitches["Batter ID"].isin(batter_ids).sum())
+        if not pitches.empty
+        and "Batter ID" in pitches.columns
+        and batter_ids
+        else 0
+    )
+
+    if (
+        not bbe.empty
+        and "Batter ID" in bbe.columns
+        and batter_ids
+    ):
+        team_bbe = bbe[bbe["Batter ID"].isin(batter_ids)]
+        hard_hits = int(team_bbe["Hard Hit"].sum())
+        barrels = int(team_bbe["Barrel Proxy"].sum())
+    else:
+        hard_hits = 0
+        barrels = 0
+
+    plate_appearances = safe_int(
+        batting.get("plateAppearances")
+    )
+    if plate_appearances <= 0:
+        plate_appearances = (
+            safe_int(batting.get("atBats"))
+            + safe_int(batting.get("baseOnBalls"))
+            + safe_int(batting.get("hitByPitch"))
+            + safe_int(batting.get("sacFlies"))
+            + safe_int(batting.get("sacBunts"))
+        )
+
+    return {
+        "plate_appearances": plate_appearances,
+        "hard_hits": hard_hits,
+        "barrels": barrels,
+        "walks": safe_int(batting.get("baseOnBalls")),
+        "strikeouts": safe_int(batting.get("strikeOuts")),
+        "pitches_seen": pitches_seen,
+    }
+
+
+def extract_live_thesis_inputs(
+    feed: dict[str, Any],
+    selected_team: str,
+) -> dict[str, Any]:
+    """
+    Map an MLB live feed to the v0.7 Live Thesis Engine inputs.
+
+    Hard-hit and barrel values use the same proxies as
+    batted_ball_events(): 95+ mph for hard hit and the existing
+    98+ mph / 26-30 degree barrel proxy.
+    """
+    selected_side = _team_side_from_name(feed, selected_team)
+    if selected_side is None:
+        raise ValueError(
+            "Selected team does not match the away or home team in the MLB feed."
+        )
+
+    opponent_side = "home" if selected_side == "away" else "away"
+    game_data = feed.get("gameData", {})
+    linescore = feed.get("liveData", {}).get("linescore", {})
+    teams = game_data.get("teams", {})
+
+    away_team = teams.get("away", {}).get("name", "Away")
+    home_team = teams.get("home", {}).get("name", "Home")
+    opponent_team = teams.get(opponent_side, {}).get(
+        "name",
+        "Opponent",
+    )
+
+    away_score = safe_int(
+        linescore.get("teams", {})
+        .get("away", {})
+        .get("runs")
+    )
+    home_score = safe_int(
+        linescore.get("teams", {})
+        .get("home", {})
+        .get("runs")
+    )
+
+    all_pitches = pitch_events(feed)
+    all_bbe = batted_ball_events(feed)
+
+    starter_id = _starter_id(feed, selected_side)
+    current_pitcher = _current_pitcher(feed)
+    tracked_pitcher_id = starter_id or current_pitcher["id"]
+
+    tracked_record = (
+        _player_record(feed, selected_side, tracked_pitcher_id)
+        if tracked_pitcher_id
+        else {}
+    )
+    tracked_stats = tracked_record.get("stats", {}).get(
+        "pitching",
+        {},
+    )
+    tracked_name = (
+        tracked_record.get("person", {}).get("fullName")
+        or current_pitcher["name"]
+    )
+
+    if (
+        not all_bbe.empty
+        and tracked_pitcher_id
+        and "Pitcher ID" in all_bbe.columns
+    ):
+        pitcher_bbe = all_bbe[
+            all_bbe["Pitcher ID"] == tracked_pitcher_id
+        ]
+    else:
+        pitcher_bbe = pd.DataFrame()
+
+    pitch_count = safe_int(
+        tracked_stats.get("numberOfPitches")
+    )
+    strikes = safe_int(tracked_stats.get("strikes"))
+
+    if (
+        pitch_count <= 0
+        and not all_pitches.empty
+        and tracked_pitcher_id
+        and "Pitcher ID" in all_pitches.columns
+    ):
+        pitcher_pitches = all_pitches[
+            all_pitches["Pitcher ID"] == tracked_pitcher_id
+        ]
+        pitch_count = len(pitcher_pitches)
+        strikes = int(pitcher_pitches["Strike"].sum())
+
+    offense = _team_offense_totals(
+        feed,
+        selected_side,
+        all_pitches,
+        all_bbe,
+    )
+    runners = _runner_state(feed)
+
+    selected_score = (
+        away_score if selected_side == "away" else home_score
+    )
+    opponent_score = (
+        home_score if selected_side == "away" else away_score
+    )
+
+    return {
+        "away_team": away_team,
+        "home_team": home_team,
+        "selected_team": selected_team,
+        "opponent_team": opponent_team,
+        "selected_side": selected_side,
+        "favored_team_is_home": selected_side == "home",
+        "away_score": away_score,
+        "home_score": home_score,
+        "favored_score": selected_score,
+        "opponent_score": opponent_score,
+        "inning": safe_int(linescore.get("currentInning")),
+        "inning_half": linescore.get("inningState") or "",
+        "outs": safe_int(linescore.get("outs")),
+        **runners,
+        "game_status": game_data.get("status", {}).get(
+            "detailedState",
+            "",
+        ),
+        "current_pitcher_id": current_pitcher["id"],
+        "current_pitcher_name": current_pitcher["name"],
+        "tracked_pitcher_id": tracked_pitcher_id,
+        "tracked_pitcher_name": tracked_name,
+        "starter_id": starter_id,
+        "favored_starter_still_active": bool(
+            starter_id
+            and current_pitcher["id"] == starter_id
+        ),
+        "pitch_count": pitch_count,
+        "strikes": strikes,
+        "strike_rate": (
+            strikes / pitch_count if pitch_count > 0 else None
+        ),
+        "first_pitch_strike_rate": _first_pitch_strike_rate(
+            feed,
+            tracked_pitcher_id,
+        ),
+        "pitcher_walks": safe_int(
+            tracked_stats.get("baseOnBalls")
+        ),
+        "pitcher_strikeouts": safe_int(
+            tracked_stats.get("strikeOuts")
+        ),
+        "batters_faced": safe_int(
+            tracked_stats.get("battersFaced")
+        ),
+        "pitcher_hard_hits_allowed": (
+            int(pitcher_bbe["Hard Hit"].sum())
+            if not pitcher_bbe.empty
+            else 0
+        ),
+        "pitcher_barrels_allowed": (
+            int(pitcher_bbe["Barrel Proxy"].sum())
+            if not pitcher_bbe.empty
+            else 0
+        ),
+        "balls_in_play_against_pitcher": len(pitcher_bbe),
+        "favored_plate_appearances": offense[
+            "plate_appearances"
+        ],
+        "favored_hard_hits": offense["hard_hits"],
+        "favored_barrels": offense["barrels"],
+        "favored_walks": offense["walks"],
+        "favored_strikeouts": offense["strikeouts"],
+        "favored_pitches_seen": offense["pitches_seen"],
+    }
 
 
 @st.cache_data(ttl=900)
