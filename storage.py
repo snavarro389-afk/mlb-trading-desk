@@ -82,6 +82,7 @@ def save_market_snapshot(
     no_vig_probability: float,
     market_status: str,
     notes: str = "",
+    sportsbook: str = "DraftKings",
 ) -> str:
     client = get_supabase_client()
     if client is None:
@@ -95,7 +96,7 @@ def save_market_snapshot(
         "captured_at": captured_at,
         "market_type": market_type,
         "selection": selection,
-        "sportsbook": "DraftKings",
+        "sportsbook": sportsbook,
         "selection_odds": int(selection_odds),
         "opposing_odds": int(opposing_odds),
         "no_vig_probability": float(no_vig_probability),
@@ -108,7 +109,7 @@ def save_market_snapshot(
         "readiness": item.get("readiness"),
         "bullpen_context": item.get("full_game_context"),
         "decision_label": market_status,
-        "model_version": "v0.5.1",
+        "model_version": "v0.6",
         "notes": notes or None,
         "metadata": {
             "separation_score": item.get("separation_score"),
@@ -149,7 +150,7 @@ def save_bet(
         "decision_status": decision_status,
         "result": "Open",
         "notes": notes or None,
-        "model_version": "v0.5.1",
+        "model_version": "v0.6",
     }
     client.table("bets").insert(payload).execute()
     return bet_id
@@ -218,7 +219,7 @@ def register_model_version() -> None:
     if client is None:
         return
     payload = {
-        "version": "v0.5.1",
+        "version": "v0.6",
         "released_at": utc_now(),
         "weights_json": {
             "starting_pitching": 0.65,
@@ -232,6 +233,72 @@ def register_model_version() -> None:
             "bullpen_limited_team_pitches": 80,
             "bullpen_concerning_team_pitches": 120,
         },
-        "notes": "Supabase persistence foundation.",
+        "notes": "Market workspace and persistent research decisions.",
     }
     client.table("model_versions").upsert(payload, on_conflict="version").execute()
+
+
+def save_research_decision(
+    *,
+    snapshot_id: str | None,
+    item: dict[str, Any],
+    game_date: str,
+    sportsbook: str,
+    market_type: str,
+    selection: str,
+    current_odds: int,
+    opposing_odds: int,
+    no_vig_probability: float,
+    market_hold: float,
+    target_odds: int,
+    maximum_odds: int,
+    recommendation: str,
+    lifecycle_status: str,
+    price_status: str,
+    final_action: str,
+    rationale: str,
+    notes: str = "",
+) -> str:
+    client = get_supabase_client()
+    if client is None:
+        raise RuntimeError("Supabase is not configured.")
+    upsert_game(item, game_date)
+    decision_id = str(uuid4())
+    payload = {
+        "decision_id": decision_id,
+        "snapshot_id": snapshot_id,
+        "game_pk": int(item["game_pk"]),
+        "game_date": game_date,
+        "evaluated_at": utc_now(),
+        "sportsbook": sportsbook,
+        "market_type": market_type,
+        "selection": selection,
+        "research_lean": item.get("baseball_advantage"),
+        "research_score": item.get("separation_score"),
+        "confidence": item.get("confidence"),
+        "readiness": item.get("readiness"),
+        "current_odds": int(current_odds),
+        "opposing_odds": int(opposing_odds),
+        "no_vig_probability": float(no_vig_probability),
+        "market_hold": float(market_hold),
+        "target_odds": int(target_odds),
+        "maximum_odds": int(maximum_odds),
+        "recommendation": recommendation,
+        "lifecycle_status": lifecycle_status,
+        "price_status": price_status,
+        "final_action": final_action,
+        "rationale": rationale,
+        "notes": notes or None,
+        "model_version": "v0.6",
+        "metadata": {
+            "premarket_status": item.get("premarket_status"),
+            "full_game_context": item.get("full_game_context"),
+            "lineup_status": item.get("lineup_status"),
+        },
+    }
+    client.table("research_decisions").insert(payload).execute()
+    return decision_id
+
+
+def load_decisions(limit: int = 1000) -> pd.DataFrame:
+    return load_table("research_decisions", "evaluated_at", limit)
