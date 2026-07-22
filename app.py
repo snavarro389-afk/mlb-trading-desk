@@ -123,6 +123,117 @@ def bullpen_default_index(status: str | None) -> int:
     return 0
 
 
+LIVE_AUTO_FIELD_KEYS = {
+    "tracked_pitcher_name": "live-pitcher-name-{game_pk}",
+    "tracked_pitcher_id": "live-pitcher-id-{game_pk}",
+    "pitch_count": "live-pitch-count-{game_pk}",
+    "strikes": "live-strikes-{game_pk}",
+    "pitcher_walks": "live-pitcher-walks-{game_pk}",
+    "batters_faced": "live-batters-faced-{game_pk}",
+    "pitcher_strikeouts": "live-pitcher-strikeouts-{game_pk}",
+    "favored_starter_still_active": "live-starter-active-{game_pk}",
+    "pitcher_hard_hits_allowed": "live-hard-hits-allowed-{game_pk}",
+    "pitcher_barrels_allowed": "live-barrels-allowed-{game_pk}",
+    "balls_in_play_against_pitcher": "live-bip-against-{game_pk}",
+    "favored_plate_appearances": "live-offense-pa-{game_pk}",
+    "favored_hard_hits": "live-offense-hard-hits-{game_pk}",
+    "favored_barrels": "live-offense-barrels-{game_pk}",
+    "favored_walks": "live-offense-walks-{game_pk}",
+    "favored_strikeouts": "live-offense-strikeouts-{game_pk}",
+    "favored_pitches_seen": "live-offense-pitches-seen-{game_pk}",
+}
+
+
+def live_feed_signature(inputs: dict[str, Any]) -> tuple[Any, ...]:
+    """Return a compact signature that changes only when meaningful live data changes."""
+    fields = (
+        "inning",
+        "inning_half",
+        "outs",
+        "away_score",
+        "home_score",
+        "runner_on_first",
+        "runner_on_second",
+        "runner_on_third",
+        "current_pitcher_id",
+        "tracked_pitcher_id",
+        "pitch_count",
+        "strikes",
+        "pitcher_walks",
+        "pitcher_strikeouts",
+        "batters_faced",
+        "pitcher_hard_hits_allowed",
+        "pitcher_barrels_allowed",
+        "favored_plate_appearances",
+        "favored_hard_hits",
+        "favored_barrels",
+        "favored_walks",
+        "favored_strikeouts",
+        "favored_pitches_seen",
+        "favored_starter_still_active",
+    )
+    return tuple(inputs.get(field) for field in fields)
+
+
+def sync_live_widget_state(
+    game_pk: int,
+    auto_inputs: dict[str, Any],
+) -> bool:
+    """Sync MLB-fed values into widgets only when the feed changes.
+
+    Live odds and qualitative bullpen controls are intentionally excluded.
+    A user can freeze the statistical widgets with the manual-override lock.
+    """
+    signature = live_feed_signature(auto_inputs)
+    signature_key = f"live-auto-signature-{game_pk}"
+    locked = bool(
+        st.session_state.get(
+            f"live-manual-stat-lock-{game_pk}",
+            False,
+        )
+    )
+
+    if locked or st.session_state.get(signature_key) == signature:
+        return False
+
+    for source_field, widget_pattern in LIVE_AUTO_FIELD_KEYS.items():
+        value = auto_inputs.get(source_field)
+        widget_key = widget_pattern.format(game_pk=game_pk)
+
+        if source_field == "tracked_pitcher_name":
+            st.session_state[widget_key] = str(value or "")
+        elif source_field == "favored_starter_still_active":
+            st.session_state[widget_key] = bool(value)
+        else:
+            st.session_state[widget_key] = safe_int(value)
+
+    first_pitch_rate = auto_inputs.get("first_pitch_strike_rate")
+    st.session_state[f"live-first-pitch-strike-{game_pk}"] = round(
+        safe_float(first_pitch_rate) * 100,
+        1,
+    )
+    st.session_state[signature_key] = signature
+    st.session_state[f"live-last-data-change-{game_pk}"] = (
+        datetime.now().astimezone().isoformat(timespec="seconds")
+    )
+    return True
+
+
+def feed_source_timestamp(feed: dict[str, Any]) -> str:
+    metadata = feed.get("metaData", {})
+    timestamp = metadata.get("timeStamp")
+    if timestamp:
+        return str(timestamp)
+
+    current_play = (
+        feed.get("liveData", {})
+        .get("plays", {})
+        .get("currentPlay", {})
+    )
+    about = current_play.get("about", {})
+    return str(about.get("endTime") or about.get("startTime") or "N/A")
+
+
 def render_dashboard(
     analyses: list[dict[str, Any]],
     selected_date: str,
@@ -1117,15 +1228,9 @@ def render_live_thesis_workspace(
             "inning": inning,
             "inning_half": inning_half,
             "outs": outs,
-            "runner_on_first": bool(
-                auto_inputs.get("runner_on_first")
-            ),
-            "runner_on_second": bool(
-                auto_inputs.get("runner_on_second")
-            ),
-            "runner_on_third": bool(
-                auto_inputs.get("runner_on_third")
-            ),
+            "runner_on_first": False,
+            "runner_on_second": False,
+            "runner_on_third": False,
             "tracked_pitcher_id": None,
             "tracked_pitcher_name": "",
             "pitch_count": 0,
@@ -1148,6 +1253,17 @@ def render_live_thesis_workspace(
         st.warning(
             "Automatic MLB field mapping was unavailable. "
             f"Manual inputs remain active: {exc}"
+        )
+
+    st.session_state.setdefault(
+        f"live-manual-stat-lock-{game_pk}",
+        False,
+    )
+    auto_fields_updated = False
+    if automatic_feed_available:
+        auto_fields_updated = sync_live_widget_state(
+            game_pk,
+            auto_inputs,
         )
 
     away_score = safe_int(
@@ -1296,9 +1412,34 @@ def render_live_thesis_workspace(
     )
 
     if automatic_feed_available:
-        st.success(
-            "Automatic MLB field mapping loaded for this game."
+        update_message = (
+            "Automatic MLB fields updated from the latest feed."
+            if auto_fields_updated
+            else "Automatic MLB field mapping is active."
         )
+        st.success(update_message)
+
+        control_col1, control_col2 = st.columns(2)
+        with control_col1:
+            st.checkbox(
+                "Keep manual statistical overrides",
+                key=f"live-manual-stat-lock-{game_pk}",
+                help=(
+                    "When enabled, automatic refreshes will not overwrite "
+                    "pitching, contact, or offense fields. Live odds are "
+                    "always preserved separately."
+                ),
+            )
+        with control_col2:
+            st.caption(
+                "Last meaningful data change: "
+                + str(
+                    st.session_state.get(
+                        f"live-last-data-change-{game_pk}",
+                        "N/A",
+                    )
+                )
+            )
 
         with st.expander("Review automatic MLB inputs"):
             st.dataframe(
@@ -1932,6 +2073,27 @@ def render_live_thesis_workspace(
         result["price_status"],
     )
 
+    validation_status = result.get("input_validation_status")
+    effective_feed_status = result.get("effective_feed_status")
+    missing_fields = result.get("missing_fields") or []
+    validation_issues = result.get("validation_issues") or []
+
+    if validation_status or effective_feed_status:
+        st.caption(
+            f"Input validation: {validation_status or 'N/A'} · "
+            f"Effective feed status: {effective_feed_status or saved_inputs['feed_status']}"
+        )
+
+    if missing_fields:
+        st.warning(
+            "Missing live fields: " + ", ".join(map(str, missing_fields))
+        )
+
+    if validation_issues:
+        st.error(
+            "Live-data conflicts: " + "; ".join(map(str, validation_issues))
+        )
+
     component_frame = pd.DataFrame(
         [
             {
@@ -2272,9 +2434,8 @@ def render_live(
 ) -> None:
     st.header("Live Desk")
     st.caption(
-        "Automated MLB game state plus command, velocity, and contact "
-        "monitoring. The v0.7.1 Live Thesis Engine compares live conditions "
-        "with the latest saved pregame decision."
+        "The v0.7.3 Live Refresh Controller polls only the selected MLB game. "
+        "Display refreshes do not create database rows, and live odds remain manual."
     )
 
     if not games:
@@ -2291,117 +2452,116 @@ def render_live(
         list(labels),
         key="live_game",
     )
+    game_pk = safe_int(labels[choice])
 
-    game_pk = safe_int(
-        labels[choice]
-    )
-
-    try:
-        feed = get_live_feed(game_pk)
-    except Exception as exc:
-        st.error(
-            f"Could not retrieve live game feed: {exc}"
+    refresh_col1, refresh_col2 = st.columns(2)
+    with refresh_col1:
+        auto_refresh = st.toggle(
+            "Auto-refresh selected game",
+            value=False,
+            key=f"live-auto-refresh-{game_pk}",
+            help=(
+                "Refreshes only while this Live Desk is open. "
+                "It does not run as a background service."
+            ),
         )
-        return
-
-    game_data = feed.get(
-        "gameData",
-        {},
-    )
-
-    live_data = feed.get(
-        "liveData",
-        {},
-    )
-
-    linescore = live_data.get(
-        "linescore",
-        {},
-    )
-
-    away = (
-        game_data.get("teams", {})
-        .get("away", {})
-        .get("name", "Away")
-    )
-
-    home = (
-        game_data.get("teams", {})
-        .get("home", {})
-        .get("name", "Home")
-    )
-
-    away_score = safe_int(
-        linescore.get("teams", {})
-        .get("away", {})
-        .get("runs", 0)
-    )
-
-    home_score = safe_int(
-        linescore.get("teams", {})
-        .get("home", {})
-        .get("runs", 0)
-    )
-
-    inning = safe_int(
-        linescore.get(
-            "currentInning",
-            0,
+    with refresh_col2:
+        refresh_seconds = st.selectbox(
+            "Refresh interval",
+            [15, 30, 60],
+            index=0,
+            format_func=lambda value: f"{value} seconds",
+            key=f"live-refresh-interval-{game_pk}",
+            disabled=not auto_refresh,
         )
-    )
 
-    inning_half = str(
-        linescore.get(
-            "inningState",
-            "",
+    run_every = f"{refresh_seconds}s" if auto_refresh else None
+
+    @st.fragment(run_every=run_every)
+    def render_selected_live_game() -> None:
+        manual_col, status_col = st.columns([1, 2])
+        with manual_col:
+            if st.button(
+                "Refresh live feed now",
+                key=f"refresh-live-now-{game_pk}",
+                use_container_width=True,
+            ):
+                get_live_feed.clear(game_pk)
+                st.rerun()
+
+        request_time = datetime.now().astimezone()
+
+        try:
+            feed = get_live_feed(game_pk)
+        except Exception as exc:
+            st.error(f"Could not retrieve live game feed: {exc}")
+            return
+
+        with status_col:
+            mode = (
+                f"Auto every {refresh_seconds}s"
+                if auto_refresh
+                else "Manual refresh"
+            )
+            st.caption(
+                f"Mode: {mode} · Last app request: "
+                f"{request_time.strftime('%-I:%M:%S %p %Z')} · "
+                f"MLB source timestamp: {feed_source_timestamp(feed)}"
+            )
+
+        game_data = feed.get("gameData", {})
+        live_data = feed.get("liveData", {})
+        linescore = live_data.get("linescore", {})
+
+        away = (
+            game_data.get("teams", {})
+            .get("away", {})
+            .get("name", "Away")
         )
-        or ""
-    )
-
-    outs = safe_int(
-        linescore.get("outs", 0)
-    )
-
-    game_status = str(
-        game_data.get(
-            "status",
-            {},
-        ).get(
-            "detailedState",
-            "",
+        home = (
+            game_data.get("teams", {})
+            .get("home", {})
+            .get("name", "Home")
         )
-        or ""
-    )
+        away_score = safe_int(
+            linescore.get("teams", {})
+            .get("away", {})
+            .get("runs", 0)
+        )
+        home_score = safe_int(
+            linescore.get("teams", {})
+            .get("home", {})
+            .get("runs", 0)
+        )
+        inning = safe_int(linescore.get("currentInning", 0))
+        inning_half = str(linescore.get("inningState", "") or "")
+        outs = safe_int(linescore.get("outs", 0))
+        game_status = str(
+            game_data.get("status", {}).get("detailedState", "") or ""
+        )
 
-    c1, c2, c3, c4 = st.columns(4)
-    c1.metric(away, away_score)
-    c2.metric(home, home_score)
-    c3.metric(
-        "Game state",
-        (
-            f"{inning_half} {inning}"
-        ).strip(),
-    )
-    c4.metric(
-        "Status",
-        game_status,
-    )
+        c1, c2, c3, c4 = st.columns(4)
+        c1.metric(away, away_score)
+        c2.metric(home, home_score)
+        c3.metric("Game state", f"{inning_half} {inning}".strip())
+        c4.metric("Status", game_status)
 
-    render_live_feed_tables(feed)
+        render_live_feed_tables(feed)
+        render_live_thesis_workspace(
+            game_pk=game_pk,
+            game_date=selected_date,
+            away_team=away,
+            home_team=home,
+            away_score=away_score,
+            home_score=home_score,
+            inning=inning,
+            inning_half=inning_half,
+            outs=outs,
+            game_status=game_status,
+            feed=feed,
+        )
 
-    render_live_thesis_workspace(
-        game_pk=game_pk,
-        game_date=selected_date,
-        away_team=away,
-        home_team=home,
-        away_score=away_score,
-        home_score=home_score,
-        inning=inning,
-        inning_half=inning_half,
-        outs=outs,
-        game_status=game_status,
-        feed=feed,
-    )
+    render_selected_live_game()
 
 
 def render_journal() -> None:
@@ -2793,7 +2953,7 @@ def render_journal() -> None:
             )
 
 
-st.title("⚾ MLB Trading Desk v0.7.1")
+st.title("⚾ MLB Trading Desk v0.7.3")
 
 with st.sidebar:
     selected_date = st.date_input(
